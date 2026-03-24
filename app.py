@@ -19,6 +19,8 @@ import yaml
 import streamlit_authenticator as stauth
 from streamlit_autorefresh import st_autorefresh
 
+import supabase_client as supa
+
 try:
     from openpyxl import load_workbook
     from openpyxl import Workbook as _OpenpyxlWorkbook
@@ -76,19 +78,13 @@ SHARED_STATE_FILE = DATA_DIR / "shared_tracking_state.json"
 
 
 def load_shared_state() -> dict:
-    """Load shared tracking state from JSON file."""
-    if SHARED_STATE_FILE.exists():
-        try:
-            return json.loads(SHARED_STATE_FILE.read_text())
-        except:
-            pass
-    return {"cycle_team_tracking": {}, "dollar_tracking": {}, "unlocked_days": [], "dollar_unlocked_days": []}
+    """Load shared tracking state (Supabase or local JSON fallback)."""
+    return supa.load_tracking_state()
 
 
 def save_shared_state(state: dict) -> None:
-    """Save shared tracking state to JSON file."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    SHARED_STATE_FILE.write_text(json.dumps(state, indent=2))
+    """Save shared tracking state (Supabase or local JSON fallback)."""
+    supa.save_tracking_state(state)
 
 
 def sync_session_with_shared():
@@ -123,23 +119,24 @@ def get_week_dates() -> dict[str, str]:
 
 
 def load_facilities_config() -> dict[str, list[dict]]:
-    """Load facility schedule from JSON, or use default.
-    
+    """Load facility schedule from Supabase / JSON, or use default.
+
     Returns dict mapping day -> list of facility dicts with keys:
     - name: str
     - frequency: str ("Weekly", "Every 2 weeks", "Every 4 weeks")
     """
-    if FACILITIES_FILE.exists():
-        data = json.loads(FACILITIES_FILE.read_text())
-        # Migrate old format (list of strings) to new format (list of dicts)
+    # Try Supabase first
+    db_data = supa.load_facilities_config_db()
+    raw = db_data if db_data else (json.loads(FACILITIES_FILE.read_text()) if FACILITIES_FILE.exists() else None)
+
+    if raw:
         migrated = {}
-        for day, facilities in data.items():
+        for day, facilities in raw.items():
             migrated[day] = []
             for fac in facilities:
                 if isinstance(fac, str):
                     migrated[day].append({"name": fac, "frequency": "Weekly"})
                 else:
-                    # Already new format
                     if "frequency" not in fac:
                         fac["frequency"] = "Weekly"
                     migrated[day].append(fac)
@@ -157,7 +154,8 @@ def get_facility_names(config: dict[str, list[dict]]) -> dict[str, list[str]]:
 
 
 def save_facilities_config(config: dict[str, list[dict]]) -> None:
-    """Save facility schedule to JSON."""
+    """Save facility schedule to Supabase and local JSON."""
+    supa.save_facilities_config_db(config)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     FACILITIES_FILE.write_text(json.dumps(config, indent=2))
 
@@ -384,7 +382,8 @@ def ensure_cycle_log_file() -> None:
 
 
 def log_stage_to_excel(facility: str, stage: str, initials: str) -> None:
-    """Append a completion record to the cycle log Excel file."""
+    """Append a completion record to audit log (Supabase + Excel)."""
+    supa.log_audit_entry(facility, stage, initials)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
     row = [facility, stage, initials, now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S")]
@@ -733,10 +732,7 @@ selected_facility = "All facilities"
 
 # --- Permission System ---
 ALL_PAGES = [
-    "Today / Daily Ops",
-    "Facility Attention Queue",
-    "ADT Tracker",
-    "Cycle Fill / Delivery",
+    "Dashboard",
     "Cycle Team",
     "Facility Management",
     "Data Explorer",
@@ -805,7 +801,7 @@ with st.sidebar:
     
     # Only show pages user has access to
     if "current_page" not in st.session_state:
-        st.session_state.current_page = allowed_pages[0] if allowed_pages else "Today / Daily Ops"
+        st.session_state.current_page = allowed_pages[0] if allowed_pages else "Dashboard"
     
     # Ensure current page is allowed
     if st.session_state.current_page not in allowed_pages and allowed_pages:
@@ -848,165 +844,167 @@ packed_total = int(cycle_view["packed"].sum()) if not cycle_view.empty else 0
 residents_due_total = int(cycle_view["residents_due"].sum()) if not cycle_view.empty else 0
 fill_completion = round((packed_total / residents_due_total) * 100) if residents_due_total else 0
 
-st.title("Ozark LTC Rx Ops Center")
-st.markdown(
-    f"""
-    <div class="hero-card">
-        <div class="hero-title">Today's pharmacy workflow is visible end-to-end</div>
-        <div class="muted" style="margin-top:8px;">
-            Missouri-focused prototype for long-term care pharmacy operations: intake, first doses, cycle fill,
-            deliveries, emergency kits, and facility attention management.
-        </div>
-        <div style="margin-top:14px;">
-            <span class="pill">Region: {data['summary']['coverage_region']}</span>
-            <span class="pill">Delivery goal: {data['summary']['on_time_delivery_goal_pct']}% on-time</span>
-            <span class="pill">Admission goal: {data['summary']['same_day_admission_goal_minutes']} min first-dose setup</span>
-            <span class="pill">Demo date: {data['today']}</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-with kpi1:
-    metric_block("Facilities in view", len(facilities_view), "Filtered by facility selector in the sidebar.")
-with kpi2:
-    metric_block("Pending orders", pending_orders, "Outstanding orders needing processing or verification.")
-with kpi3:
-    metric_block("Overdue first doses", overdue_first_doses, "Residents currently beyond first-dose target windows.")
-with kpi4:
-    metric_block("Admissions today", adt_admissions, "ADT intake volume from the tracker below.")
-with kpi5:
-    metric_block("Cycle fill packed", f"{fill_completion}%", "Packed vs total residents due in cycle-fill worklists.")
-
-st.subheader("Ozark LTC Rx pharmacy workflow")
-workflow_cols = st.columns(4)
-workflow_steps = [
-    ("1. Intake / ADT", "Admissions, discharges, transfers, docs, first-dose readiness"),
-    ("2. Clinical Verification", "Queue prioritization, STAT meds, pharmacist review"),
-    ("3. Fulfillment + Delivery", "Cycle fill, route readiness, temperature control, proof of delivery"),
-    ("4. Facility Follow-through", "Emergency kits, credits, callbacks, exceptions"),
-]
-for col, (title, detail) in zip(workflow_cols, workflow_steps):
-    with col:
-        st.markdown(f"<div class='block-card'><strong>{title}</strong><br><span class='muted'>{detail}</span></div>", unsafe_allow_html=True)
-
 # Get current page
-current_page = st.session_state.get("current_page", "Today / Daily Ops")
+current_page = st.session_state.get("current_page", "Dashboard")
 
-# --- PAGE: Today / Daily Ops ---
-if current_page == "Today / Daily Ops":
-    left, right = st.columns([1.4, 1])
-    with left:
-        st.markdown("### Today's operating board")
-        st.dataframe(daily_ops, use_container_width=True, hide_index=True)
-    with right:
-        st.markdown("### Shift priorities")
-        for priority_item in daily_ops[daily_ops["priority"].isin(["High", "Medium"])].to_dict("records"):
-            st.markdown(
-                f"""
-                <div class="block-card">
-                    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
-                        <strong>{priority_item['time']} · {priority_item['lane']}</strong>
-                        {risk_badge(priority_item['priority'])}
-                    </div>
-                    <div style="margin-top:8px;">{priority_item['task']}</div>
-                    <div class="muted" style="margin-top:6px;">Owner: {priority_item['owner']} · {priority_item['status']}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+# --- PAGE: Dashboard ---
+if current_page == "Dashboard":
+    st.title("Dashboard")
+    st.caption(f"Overview as of {datetime.now().strftime('%A %Y-%m-%d %H:%M')}")
 
-    st.markdown("### Today's callouts")
-    callout_cols = st.columns(3)
-    with callout_cols[0]:
-        st.warning(f"{high_risk_count} facility account(s) are in HIGH risk status.")
-    with callout_cols[1]:
-        st.info(f"{len(delivery[delivery['status'] == 'In progress'])} route(s) are already on the road.")
-    with callout_cols[2]:
-        at_risk_kits = int((emergency_kits['status'] == 'At Risk').sum())
-        st.error(f"{at_risk_kits} emergency-kit issue(s) need same-day follow-up.")
+    # Load facility config and tracking state
+    _dash_facilities_raw = load_facilities_config()
+    _dash_facilities: dict[str, list[str]] = {}
+    for _d, _fl in _dash_facilities_raw.items():
+        _dash_facilities[_d] = [
+            f["name"] for f in _fl
+            if facility_active_this_week(f.get("frequency", "Weekly"), f.get("start_date"))
+        ]
 
-# --- PAGE: Facility Attention Queue ---
-if current_page == "Facility Attention Queue":
-    st.markdown("### Facility attention queue")
-    attention = facilities_view.copy()
-    attention["risk_sort"] = attention["risk_level"].map(RISK_ORDER)
-    attention = attention.sort_values(["risk_sort", "overdue_first_doses", "pending_orders"], ascending=[True, False, False])
+    _dash_tracking = st.session_state.get("cycle_team_tracking", {})
+    _dash_dollar = st.session_state.get("dollar_tracking", {})
 
-    for row in attention.to_dict("records"):
-        st.markdown(
-            f"""
-            <div class="block-card">
-                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
-                    <div>
-                        <div style="font-size:1.05rem;font-weight:800;">{row['facility']} · {row['city']}</div>
-                        <div class="muted">Beds {row['beds']} · Census {row['census']} · Last contact {row['last_contact']}</div>
-                    </div>
-                    <div>{risk_badge(row['risk_level'])}</div>
-                </div>
-                <div style="margin-top:12px;">{row['attention_reason']}</div>
-                <div style="margin-top:12px;">
-                    <span class="pill">Pending orders: {row['pending_orders']}</span>
-                    <span class="pill">Overdue first doses: {row['overdue_first_doses']}</span>
-                    <span class="pill">Cycle fill: {row['cycle_fill_progress_pct']}%</span>
-                    <span class="pill">Delivery: {row['delivery_status']}</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    today_key = _today_abbr()
+    today_idx = DAY_ABBR_ORDER.index(today_key) if today_key in DAY_ABBR_ORDER else -1
+    now_hour = datetime.now().hour + datetime.now().minute / 60.0
 
-# --- PAGE: ADT Tracker ---
-if current_page == "ADT Tracker":
-    st.markdown("### Admissions / discharges / transfers tracker")
-    adt_counts = adt_view["event_type"].value_counts().to_dict()
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Admissions", adt_counts.get("Admission", 0))
-    c2.metric("Discharges", adt_counts.get("Discharge", 0))
-    c3.metric("Transfers", adt_counts.get("Transfer", 0))
+    # Collect rows: today's facilities + previous-day incomplete
+    dash_rows: list[dict] = []
+    seen: set[tuple[str, str]] = set()
 
-    adt_display = adt_view.copy()
-    adt_display["priority"] = adt_display["risk"].apply(lambda x: f"{x} priority")
-    st.dataframe(adt_display, use_container_width=True, hide_index=True)
+    # Previous days incomplete
+    if today_key in DAY_ABBR_ORDER:
+        for prior_day in DAY_ABBR_ORDER[:today_idx]:
+            for fac in _dash_facilities.get(prior_day, []):
+                sm = _dash_tracking.get(prior_day, {}).get(fac, {})
+                c, t = stage_counts(sm)
+                if c < t:
+                    pct = int(c / t * 100) if t else 0
+                    # Dollar status
+                    dm = _dash_dollar.get(prior_day, {}).get(fac, {})
+                    if dm.get("_no_meds"):
+                        dollar_st = "No Meds"
+                    else:
+                        dc, dt_ = stage_counts(dm, CYCLE_DOLLAR_STAGE_ORDER)
+                        dollar_st = "Completed" if dc >= dt_ else ("In Progress" if dc > 0 else "Not Started")
+                    dash_rows.append({
+                        "Day": prior_day,
+                        "Facility": fac,
+                        "Progress": f"{c}/{t} ({pct}%)",
+                        "Status": f"Overdue ({prior_day})",
+                        "High Dollar": dollar_st,
+                        "_overdue": True,
+                        "_pct": pct,
+                    })
+                    seen.add((prior_day, fac))
 
-    st.markdown("### Intake actions needing coordination")
-    for event in adt_view.sort_values("effective_time").to_dict("records"):
-        if event["risk"] != "Low":
-            st.markdown(
-                f"- **{event['resident']}** ({event['event_type']} · {event['facility']}) — {event['notes']} _[{event['med_status']}]_"
-            )
+    # Today's facilities
+    for fac in _dash_facilities.get(today_key, []):
+        if (today_key, fac) in seen:
+            continue
+        sm = _dash_tracking.get(today_key, {}).get(fac, {})
+        c, t = stage_counts(sm)
+        pct = int(c / t * 100) if t else 0
+        status_label = cycle_status_label(sm)
 
-# --- PAGE: Cycle Fill / Delivery ---
-if current_page == "Cycle Fill / Delivery":
-    fill_left, fill_right = st.columns([1.1, 0.9])
-    with fill_left:
-        st.markdown("### Cycle fill visibility")
-        cycle_show = cycle_view.copy()
-        cycle_show["completion_pct"] = ((cycle_show["packed"] / cycle_show["residents_due"]) * 100).round(0).astype(int)
-        st.dataframe(cycle_show, use_container_width=True, hide_index=True)
+        # Dollar status
+        dm = _dash_dollar.get(today_key, {}).get(fac, {})
+        if dm.get("_no_meds"):
+            dollar_st = "No Meds"
+        else:
+            dc, dt_ = stage_counts(dm, CYCLE_DOLLAR_STAGE_ORDER)
+            dollar_st = "Completed" if dc >= dt_ else ("In Progress" if dc > 0 else "Not Started")
 
-        st.markdown("### Emergency-kit visibility")
-        st.dataframe(ekit_view, use_container_width=True, hide_index=True)
+        # Smart status highlighting via 4-week average
+        avg_hour = supa.get_average_completion_hour(fac, "Facility finished", weeks=4)
+        highlight = ""
+        if avg_hour is not None:
+            diff_minutes = (now_hour - avg_hour) * 60
+            if status_label == "Completed":
+                # Completed: check if completed early
+                completion_times = supa.get_facility_completion_times(fac, "Facility finished", weeks=0)
+                # For today, just compare now vs average — if we're 30+ min before avg, green
+                if diff_minutes <= -30:
+                    highlight = "early"
+            else:
+                # Not complete yet
+                if diff_minutes >= 30:
+                    highlight = "late"
 
-    with fill_right:
-        st.markdown("### Delivery route board")
-        for route in delivery.to_dict("records"):
-            st.markdown(
-                f"""
-                <div class="block-card">
-                    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
-                        <strong>{route['route']}</strong>
-                        {risk_badge(route['status'])}
-                    </div>
-                    <div class="muted" style="margin-top:6px;">Driver {route['driver']} · Stops {route['stops']}</div>
-                    <div style="margin-top:8px;">Next stop: {route['next_stop']} · ETA {route['eta']}</div>
-                    <div class="muted" style="margin-top:6px;">Temp control: {route['temperature_control']} · POD: {route['pod']}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        dash_rows.append({
+            "Day": today_key,
+            "Facility": fac,
+            "Progress": f"{c}/{t} ({pct}%)",
+            "Status": status_label,
+            "High Dollar": dollar_st,
+            "_overdue": False,
+            "_pct": pct,
+            "_highlight": highlight,
+        })
+
+    if dash_rows:
+        # Summary metrics
+        total = len(dash_rows)
+        completed = sum(1 for r in dash_rows if r["Status"] == "Completed")
+        overdue = sum(1 for r in dash_rows if r.get("_overdue"))
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Facilities", total)
+        m2.metric("Completed", completed)
+        m3.metric("In Progress", total - completed - overdue)
+        m4.metric("Overdue", overdue)
+
+        # Render the grid with colored status cells
+        for row in dash_rows:
+            highlight = row.get("_highlight", "")
+            is_overdue = row.get("_overdue", False)
+
+            if is_overdue:
+                bg = "#fef2f2"
+                border_color = "#fca5a5"
+            elif highlight == "early":
+                bg = "#f0fdf4"
+                border_color = "#86efac"
+            elif highlight == "late":
+                bg = "#fef2f2"
+                border_color = "#fca5a5"
+            else:
+                bg = "white"
+                border_color = "#dbe4f0"
+
+            status_text = row["Status"]
+            if highlight == "early":
+                status_text += " (ahead of avg)"
+            elif highlight == "late":
+                status_text += " (behind avg)"
+
+            cols = st.columns([2, 1.5, 1.5, 1.2])
+            with cols[0]:
+                st.markdown(
+                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
+                    f"padding:8px 12px;font-weight:600;'>{row['Facility']}"
+                    f"<span style='color:#64748b;font-weight:400;font-size:0.85em;'> ({row['Day']})</span></div>",
+                    unsafe_allow_html=True,
+                )
+            with cols[1]:
+                st.markdown(
+                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
+                    f"padding:8px 12px;'>{row['Progress']}</div>",
+                    unsafe_allow_html=True,
+                )
+            with cols[2]:
+                st.markdown(
+                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
+                    f"padding:8px 12px;'>{status_text}</div>",
+                    unsafe_allow_html=True,
+                )
+            with cols[3]:
+                st.markdown(
+                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
+                    f"padding:8px 12px;'>{row['High Dollar']}</div>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("No facilities scheduled for today.")
 
 # --- PAGE: Cycle Team (combined with internal tabs) ---
 if current_page == "Cycle Team":

@@ -16,10 +16,8 @@ permissions:
     admin:
       - all
     user:
-      - Today / Daily Ops
-      - Cycle Team Tracking
-      - $$ Tracking
-      - Progress Overview
+      - Dashboard
+      - Cycle Team
   # Per-user overrides (optional)
   users: {}
 
