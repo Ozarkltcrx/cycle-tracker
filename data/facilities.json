@@ -1,0 +1,147 @@
+{
+  "Mon": [
+    {
+      "name": "Mother of Good Counsel",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "McClay",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Belleview",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Hillside",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Superior Manor",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Walnut Street",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Colonial Doniphan",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "New Hope",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "New Hope ILF",
+      "frequency": "Every 4 weeks",
+      "start_date": "2026-03-16"
+    }
+  ],
+  "Tue": [
+    {
+      "name": "Westwood Hills",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Glenfield",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Granite House",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Creve Coeur",
+      "frequency": "Weekly"
+    }
+  ],
+  "Wed": [
+    {
+      "name": "Licking RCF",
+      "frequency": "Every 2 weeks",
+      "start_date": "2026-03-11"
+    },
+    {
+      "name": "Salem Care Center",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Salem Residential Care",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Baisch SNF",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Baisch RCF",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Pillars",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Legacy",
+      "frequency": "Every 2 weeks",
+      "start_date": "2026-03-11"
+    },
+    {
+      "name": "John Knox ALF",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "John Knox ILF",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "John Knox SNF",
+      "frequency": "Weekly"
+    }
+  ],
+  "Thu": [
+    {
+      "name": "Delta South",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Seville",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "St Johns",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "UCity",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Bentley's",
+      "frequency": "Weekly"
+    }
+  ],
+  "Fri": [
+    {
+      "name": "Bertrand",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Colonial Bismark",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Oakdale SNF",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Oakdale ALF",
+      "frequency": "Weekly"
+    },
+    {
+      "name": "Oakdale RCF",
+      "frequency": "Weekly"
+    }
+  ]
+}
