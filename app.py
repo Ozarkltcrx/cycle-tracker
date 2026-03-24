@@ -1,0 +1,1392 @@
+#!/usr/bin/env python3
+"""
+Missouri LTC Pharmacy Operations Command Center
+Run: streamlit run app.py
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+from xml.etree import ElementTree as ET
+from zipfile import ZIP_DEFLATED, ZipFile
+
+import pandas as pd
+import streamlit as st
+
+try:
+    from openpyxl import load_workbook
+    from openpyxl import Workbook as _OpenpyxlWorkbook
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
+
+CYCLE_STAGE_ORDER = [
+    "Pulling meds",
+    "Exported",
+    "Traying",
+    "Running in machine",
+    "Through machine",
+    "Through perl",
+    "Bag check completed",
+    "Toted",
+    "Facility finished",
+]
+
+# $$ Tracking stages (subset for cycle fill billing)
+CYCLE_DOLLAR_STAGE_ORDER = [
+    "Exported",
+    "Through machine",
+    "Through Perl",
+    "Back Checked",
+    "Toted",
+    "Facility Complete",
+]
+
+CYCLE_TEAM_SCHEDULE = {
+    "Mon": ["Sunrise Manor", "Oakwood Care", "Pine Valley", "Shady Pines"],
+    "Tue": ["Willow Creek", "Maple Ridge", "Cedar Heights", "Harmony House"],
+    "Wed": ["Golden Meadows", "River Bend Care", "Silver Oaks", "Evergreen Terrace"],
+    "Thu": ["Liberty Place", "Brookside Manor", "Meadow View", "Fox Hollow"],
+    "Fri": ["Pleasant Hill", "Autumn Lake", "Grandview Care", "Heritage Pointe"],
+}
+
+CYCLE_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(CYCLE_STAGE_ORDER)}
+CYCLE_DOLLAR_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(CYCLE_DOLLAR_STAGE_ORDER)}
+
+# Frequency options for facilities
+FREQUENCY_OPTIONS = ["Weekly", "Every 2 weeks", "Every 4 weeks"]
+
+# Display string for $$ that won't be interpreted as LaTeX (zero-width space between)
+DOLLAR_DISPLAY = "$\u200B$"
+
+APP_DIR = Path(__file__).parent
+DATA_DIR = APP_DIR / "data"
+DATA_FILE = DATA_DIR / "mo_ltc_demo.json"
+CYCLE_LOG_FILE = DATA_DIR / "cycle_log.xlsx"
+
+DAY_ABBR_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+FACILITIES_FILE = DATA_DIR / "facilities.json"
+
+
+def get_week_dates() -> dict[str, str]:
+    """Return dict mapping day abbrev to formatted date string for current week."""
+    today = datetime.now()
+    # Monday = 0, so we go back to Monday of this week
+    monday = today - timedelta(days=today.weekday())
+    dates = {}
+    for i, day in enumerate(DAY_ABBR_ORDER):
+        day_date = monday + timedelta(days=i)
+        dates[day] = day_date.strftime("%b %d")
+    return dates
+
+
+def load_facilities_config() -> dict[str, list[dict]]:
+    """Load facility schedule from JSON, or use default.
+    
+    Returns dict mapping day -> list of facility dicts with keys:
+    - name: str
+    - frequency: str ("Weekly", "Every 2 weeks", "Every 4 weeks")
+    """
+    if FACILITIES_FILE.exists():
+        data = json.loads(FACILITIES_FILE.read_text())
+        # Migrate old format (list of strings) to new format (list of dicts)
+        migrated = {}
+        for day, facilities in data.items():
+            migrated[day] = []
+            for fac in facilities:
+                if isinstance(fac, str):
+                    migrated[day].append({"name": fac, "frequency": "Weekly"})
+                else:
+                    # Already new format
+                    if "frequency" not in fac:
+                        fac["frequency"] = "Weekly"
+                    migrated[day].append(fac)
+        return migrated
+    # Default schedule
+    return {
+        day: [{"name": fac, "frequency": "Weekly"} for fac in facilities]
+        for day, facilities in CYCLE_TEAM_SCHEDULE.items()
+    }
+
+
+def get_facility_names(config: dict[str, list[dict]]) -> dict[str, list[str]]:
+    """Extract just facility names from config (for backward compat)."""
+    return {day: [f["name"] for f in facs] for day, facs in config.items()}
+
+
+def save_facilities_config(config: dict[str, list[dict]]) -> None:
+    """Save facility schedule to JSON."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    FACILITIES_FILE.write_text(json.dumps(config, indent=2))
+
+
+def get_current_week_number() -> int:
+    """Get ISO week number for current date."""
+    return datetime.now().isocalendar()[1]
+
+
+def get_week_start_date(target_date: datetime | None = None) -> datetime:
+    """Get the Monday of the week containing target_date (or today)."""
+    if target_date is None:
+        target_date = datetime.now()
+    return target_date - timedelta(days=target_date.weekday())
+
+
+def facility_active_this_week(frequency: str, start_date: str | None = None) -> bool:
+    """Check if facility is active this week based on frequency and start date.
+    
+    Args:
+        frequency: "Weekly", "Every 2 weeks", or "Every 4 weeks"
+        start_date: ISO date string (YYYY-MM-DD) of first run, or None for Weekly
+    """
+    if frequency == "Weekly":
+        return True
+    
+    if not start_date:
+        # No start date set, default to active (treat as Weekly)
+        return True
+    
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return True
+    
+    # Get Monday of start week and current week
+    start_week_monday = get_week_start_date(start)
+    current_week_monday = get_week_start_date()
+    
+    # Calculate weeks since start
+    weeks_diff = (current_week_monday - start_week_monday).days // 7
+    
+    if frequency == "Every 2 weeks":
+        return weeks_diff % 2 == 0
+    elif frequency == "Every 4 weeks":
+        return weeks_diff % 4 == 0
+    
+    return True
+
+
+def get_next_run_date(frequency: str, start_date: str | None, day_abbr: str) -> str:
+    """Get the next run date for a facility based on frequency."""
+    if frequency == "Weekly":
+        # Next occurrence of this day
+        today = datetime.now()
+        day_idx = DAY_ABBR_ORDER.index(day_abbr)
+        days_until = (day_idx - today.weekday()) % 7
+        if days_until == 0 and today.hour >= 18:  # Past 6pm, show next week
+            days_until = 7
+        next_date = today + timedelta(days=days_until)
+        return next_date.strftime("%b %d")
+    
+    if not start_date:
+        return "Not set"
+    
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return "Invalid"
+    
+    today = datetime.now()
+    interval = 14 if frequency == "Every 2 weeks" else 28
+    
+    # Find next occurrence on or after today
+    current = start
+    while current < today:
+        current += timedelta(days=interval)
+    
+    return current.strftime("%b %d")
+
+
+def _today_abbr() -> str:
+    return datetime.now().strftime("%a")[:3]
+
+
+def get_visible_days(tracking_state: dict) -> list[str]:
+    """Return days to show: today + any prior day with incomplete facilities."""
+    today = _today_abbr()
+    if today not in DAY_ABBR_ORDER:
+        return DAY_ABBR_ORDER  # weekend: show all
+    today_idx = DAY_ABBR_ORDER.index(today)
+    visible = []
+    for i, day in enumerate(DAY_ABBR_ORDER):
+        if i == today_idx:
+            visible.append(day)
+            continue
+        if i > today_idx:
+            continue  # future days hidden
+        # Past day: show only if has incomplete facilities
+        day_state = tracking_state.get(day, {})
+        for fac in CYCLE_TEAM_SCHEDULE.get(day, []):
+            c, t = stage_counts(day_state.get(fac, {}))
+            if c < t:
+                visible.append(day)
+                break
+    return visible
+
+
+def _excel_col_name(index: int) -> str:
+    result = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _xlsx_escape(value: Any) -> str:
+    text = "" if value is None else str(value)
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _build_sheet_xml(rows: list[list[Any]]) -> str:
+    dimension = f"A1:E{max(len(rows), 1)}"
+    row_xml = []
+    for row_idx, row in enumerate(rows, start=1):
+        cell_xml = []
+        for col_idx, value in enumerate(row, start=1):
+            cell_ref = f"{_excel_col_name(col_idx)}{row_idx}"
+            cell_xml.append(
+                f'<c r="{cell_ref}" t="inlineStr"><is><t>{_xlsx_escape(value)}</t></is></c>'
+            )
+        row_xml.append(f'<row r="{row_idx}">{"".join(cell_xml)}</row>')
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<dimension ref="{dimension}"/>'
+        '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
+        '<sheetFormatPr defaultRowHeight="15"/>'
+        f'<sheetData>{"".join(row_xml)}</sheetData>'
+        '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>'
+        '</worksheet>'
+    )
+
+
+def _write_basic_xlsx(path: Path, rows: list[list[Any]]) -> None:
+    content_types = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+  <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
+</Types>'''
+    rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
+</Relationships>'''
+    workbook = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Cycle Log" sheetId="1" r:id="rId1"/></sheets>
+</workbook>'''
+    workbook_rels = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>'''
+    core = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dc:title>Cycle Log</dc:title>
+  <dc:creator>Command Center</dc:creator>
+</cp:coreProperties>'''
+    app = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Application>Command Center</Application>
+</Properties>'''
+
+    with ZipFile(path, "w", compression=ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("docProps/core.xml", core)
+        zf.writestr("docProps/app.xml", app)
+        zf.writestr("xl/workbook.xml", workbook)
+        zf.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        zf.writestr("xl/worksheets/sheet1.xml", _build_sheet_xml(rows))
+
+
+def _read_basic_xlsx_rows(path: Path) -> list[list[str]]:
+    ns = {"main": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with ZipFile(path) as zf:
+        sheet_xml = zf.read("xl/worksheets/sheet1.xml")
+    root = ET.fromstring(sheet_xml)
+    rows: list[list[str]] = []
+    for row in root.findall("main:sheetData/main:row", ns):
+        current: list[str] = []
+        for cell in row.findall("main:c", ns):
+            inline = cell.find("main:is/main:t", ns)
+            value = inline.text if inline is not None and inline.text is not None else ""
+            current.append(value)
+        rows.append(current)
+    return rows
+
+
+def ensure_cycle_log_file() -> None:
+    """Create the Excel audit file with headers if it does not already exist."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    headers = ["Facility", "Stage", "Initials", "Date", "Time"]
+    if CYCLE_LOG_FILE.exists():
+        return
+    if HAS_OPENPYXL:
+        wb = _OpenpyxlWorkbook()
+        ws = wb.active
+        ws.title = "Cycle Log"
+        ws.append(headers)
+        wb.save(CYCLE_LOG_FILE)
+        return
+    _write_basic_xlsx(CYCLE_LOG_FILE, [headers])
+
+
+def log_stage_to_excel(facility: str, stage: str, initials: str) -> None:
+    """Append a completion record to the cycle log Excel file."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    row = [facility, stage, initials, now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S")]
+    headers = ["Facility", "Stage", "Initials", "Date", "Time"]
+    if HAS_OPENPYXL:
+        if CYCLE_LOG_FILE.exists():
+            wb = load_workbook(CYCLE_LOG_FILE)
+            ws = wb.active
+        else:
+            wb = _OpenpyxlWorkbook()
+            ws = wb.active
+            ws.title = "Cycle Log"
+            ws.append(headers)
+        ws.append(row)
+        wb.save(CYCLE_LOG_FILE)
+        return
+
+    existing_rows = _read_basic_xlsx_rows(CYCLE_LOG_FILE) if CYCLE_LOG_FILE.exists() else []
+    if not existing_rows:
+        existing_rows = [headers]
+    existing_rows.append(row)
+    _write_basic_xlsx(CYCLE_LOG_FILE, existing_rows)
+
+CUSTOM_CSS = """
+<style>
+    .stApp {
+        background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+    }
+    section[data-testid="stSidebar"] {
+        background: #0f172a !important;
+    }
+    section[data-testid="stSidebar"] * {
+        color: white !important;
+    }
+    .hero-card, .block-card {
+        background: white;
+        border: 1px solid #dbe4f0;
+        border-radius: 18px;
+        padding: 18px 20px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+        margin-bottom: 12px;
+    }
+    .hero-title {
+        font-size: 1.6rem;
+        font-weight: 800;
+        color: #0f172a;
+    }
+    .muted {
+        color: #64748b;
+        font-size: 0.95rem;
+    }
+    .pill {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        margin-right: 8px;
+        margin-bottom: 8px;
+        background: #e0e7ff;
+        color: #3730a3;
+    }
+</style>
+"""
+
+RISK_ORDER = {"High": 0, "Medium": 1, "Low": 2}
+STATUS_COLORS = {
+    "High": "#dc2626",
+    "Medium": "#d97706",
+    "Low": "#059669",
+    "At Risk": "#dc2626",
+    "Watch": "#d97706",
+    "On Track": "#059669",
+    "Delayed": "#dc2626",
+    "In progress": "#2563eb",
+    "Complete": "#059669",
+}
+
+
+@st.cache_data
+def load_demo_data() -> dict[str, Any]:
+    return json.loads(DATA_FILE.read_text())
+
+
+def risk_badge(label: str) -> str:
+    color = STATUS_COLORS.get(label, "#475569")
+    return (
+        f"<span style='display:inline-block;padding:4px 10px;border-radius:999px;"
+        f"background:{color};color:white;font-size:12px;font-weight:700;'>{label}</span>"
+    )
+
+
+def metric_block(label: str, value: Any, help_text: str) -> None:
+    st.metric(label, value, help=help_text)
+
+
+def build_cycle_team_state() -> dict[str, dict[str, dict[str, str]]]:
+    return {
+        day: {
+            facility: {stage: "" for stage in CYCLE_STAGE_ORDER}
+            for facility in facilities
+        }
+        for day, facilities in CYCLE_TEAM_SCHEDULE.items()
+    }
+
+
+def stage_counts(stage_map: dict[str, str], stage_order: list[str] = None) -> tuple[int, int]:
+    if stage_order is None:
+        stage_order = CYCLE_STAGE_ORDER
+    completed = sum(1 for stage in stage_order if stage_map.get(stage, ""))
+    return completed, len(stage_order)
+
+
+def cycle_status_label(stage_map: dict[str, str], stage_order: list[str] = None) -> str:
+    if stage_order is None:
+        stage_order = CYCLE_STAGE_ORDER
+    completed, total = stage_counts(stage_map, stage_order)
+    if completed == 0:
+        return "Not Started"
+    if completed >= total:
+        return "Completed"
+
+    for stage in reversed(stage_order):
+        if stage_map.get(stage, ""):
+            return stage
+
+    return "Not Started"
+
+
+def cycle_status_color(status: str) -> str:
+    return {
+        "Not Started": "#94a3b8",
+        "Completed": "#059669",
+    }.get(status, "#2563eb")
+
+
+def render_cycle_facility(day: str, facility: str, stage_map: dict[str, str]) -> None:
+    completed, total = stage_counts(stage_map)
+    progress_pct = completed / total
+    status = cycle_status_label(stage_map)
+    accent = cycle_status_color(status)
+
+    # Build expander label with progress info
+    pct_display = int(progress_pct * 100)
+    expander_label = f"**{facility}** — {status} ({pct_display}%)"
+    
+    with st.expander(expander_label, expanded=False):
+        initials_summary = ", ".join(
+            f"{stage}: {initials}"
+            for stage, initials in stage_map.items()
+            if initials
+        )
+        
+        progress_col, summary_col = st.columns([1.25, 1])
+        with progress_col:
+            st.progress(progress_pct, text=f"{pct_display}% complete")
+        with summary_col:
+            if status == "Completed":
+                st.success("Completed and ready to roll.")
+            elif status == "Not Started":
+                st.caption("No stages marked yet.")
+            else:
+                st.info(f"Latest: {status}")
+            if initials_summary:
+                st.caption(f"By: {initials_summary}")
+
+        stage_cols = st.columns(3)
+        for idx, stage in enumerate(CYCLE_STAGE_ORDER):
+            initials_key = f"cycle_initials::{day}::{facility}::{stage}"
+            form_key = f"cycle_form::{day}::{facility}::{stage}"
+            completed_initials = stage_map.get(stage, "")
+            with stage_cols[idx % 3]:
+                if completed_initials:
+                    st.success(f"{CYCLE_STAGE_LABELS[stage]}\n\n✓ {completed_initials}")
+                else:
+                    with st.form(form_key, clear_on_submit=True):
+                        initials_value = st.text_input(
+                            CYCLE_STAGE_LABELS[stage],
+                            max_chars=4,
+                            key=initials_key,
+                            placeholder="AB",
+                        )
+                        submitted = st.form_submit_button("Mark complete", use_container_width=True)
+                        if submitted:
+                            cleaned = initials_value.strip().upper()
+                            if cleaned:
+                                stage_map[stage] = cleaned
+                                st.session_state.cycle_team_tracking[day][facility][stage] = cleaned
+                                log_stage_to_excel(facility, stage, cleaned)
+                                st.rerun()
+                            else:
+                                st.warning("Enter initials to complete the stage.")
+
+
+def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -> None:
+    """Render a facility card for $$ tracking with different stages."""
+    # Check for "No meds" bypass
+    no_meds = stage_map.get("_no_meds", False)
+    
+    if no_meds:
+        # Show as bypassed
+        expander_label = f"**{facility} {DOLLAR_DISPLAY}** — No Meds ⏭️"
+        with st.expander(expander_label, expanded=False):
+            st.info("🚫 No meds to run — bypassed")
+            if st.button(f"↩️ Undo bypass", key=f"undo_nomeds_{day}_{facility}"):
+                del st.session_state.dollar_tracking[day][facility]["_no_meds"]
+                st.rerun()
+        return
+    
+    completed, total = stage_counts(stage_map, CYCLE_DOLLAR_STAGE_ORDER)
+    progress_pct = completed / total if total > 0 else 0
+    status = cycle_status_label(stage_map, CYCLE_DOLLAR_STAGE_ORDER)
+    
+    # Build expander label with $$ suffix
+    pct_display = int(progress_pct * 100)
+    expander_label = f"**{facility} {DOLLAR_DISPLAY}** — {status} ({pct_display}%)"
+    
+    with st.expander(expander_label, expanded=False):
+        # No meds bypass button at top
+        bypass_col, spacer_col = st.columns([1, 2])
+        with bypass_col:
+            if st.button("🚫 No meds to run", key=f"nomeds_{day}_{facility}", use_container_width=True):
+                st.session_state.dollar_tracking[day][facility]["_no_meds"] = True
+                log_stage_to_excel(f"{facility} $$", "NO MEDS", "BYPASS")
+                st.rerun()
+        
+        initials_summary = ", ".join(
+            f"{stage}: {initials}"
+            for stage, initials in stage_map.items()
+            if initials and not stage.startswith("_")
+        )
+        
+        progress_col, summary_col = st.columns([1.25, 1])
+        with progress_col:
+            st.progress(progress_pct, text=f"{pct_display}% complete")
+        with summary_col:
+            if status == "Completed":
+                st.success(f"{DOLLAR_DISPLAY} Complete!")
+            elif status == "Not Started":
+                st.caption("No stages marked yet.")
+            else:
+                st.info(f"Latest: {status}")
+            if initials_summary:
+                st.caption(f"By: {initials_summary}")
+
+        stage_cols = st.columns(3)
+        for idx, stage in enumerate(CYCLE_DOLLAR_STAGE_ORDER):
+            initials_key = f"dollar_initials::{day}::{facility}::{stage}"
+            form_key = f"dollar_form::{day}::{facility}::{stage}"
+            completed_initials = stage_map.get(stage, "")
+            with stage_cols[idx % 3]:
+                if completed_initials:
+                    st.success(f"{CYCLE_DOLLAR_STAGE_LABELS[stage]}\n\n✓ {completed_initials}")
+                else:
+                    with st.form(form_key, clear_on_submit=True):
+                        initials_value = st.text_input(
+                            CYCLE_DOLLAR_STAGE_LABELS[stage],
+                            max_chars=4,
+                            key=initials_key,
+                            placeholder="AB",
+                        )
+                        submitted = st.form_submit_button("Mark complete", use_container_width=True)
+                        if submitted:
+                            cleaned = initials_value.strip().upper()
+                            if cleaned:
+                                stage_map[stage] = cleaned
+                                st.session_state.dollar_tracking[day][facility][stage] = cleaned
+                                log_stage_to_excel(f"{facility} $$", stage, cleaned)
+                                st.rerun()
+                            else:
+                                st.warning("Enter initials to complete the stage.")
+
+
+ensure_cycle_log_file()
+
+st.set_page_config(page_title="Missouri LTC Ops Center", page_icon="💊", layout="wide")
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+data = load_demo_data()
+facilities = pd.DataFrame(data["facilities"])
+daily_ops = pd.DataFrame(data["daily_ops"])
+adt = pd.DataFrame(data["adt_events"])
+cycle_fill = pd.DataFrame(data["cycle_fill"])
+delivery = pd.DataFrame(data["delivery_runs"])
+emergency_kits = pd.DataFrame(data["emergency_kits"])
+
+facility_names = ["All facilities", *facilities["facility"].tolist()]
+selected_facility = "All facilities"
+
+with st.sidebar:
+    st.title("💊 Missouri LTC")
+    st.caption("Concrete pharmacy operations prototype")
+    selected_facility = st.selectbox("Facility filter", facility_names)
+    st.caption(f"Demo data file: {DATA_FILE.name}")
+    st.divider()
+    st.caption(f"Facilities: {len(facilities)}")
+    st.caption(f"ADT events today: {len(adt)}")
+    st.caption(f"Cycle-fill worklists: {len(cycle_fill)}")
+    st.caption(f"Delivery routes: {len(delivery)}")
+    st.caption(f"Emergency kits tracked: {len(emergency_kits)}")
+
+if selected_facility != "All facilities":
+    facilities_view = facilities[facilities["facility"] == selected_facility].copy()
+    adt_view = adt[adt["facility"] == selected_facility].copy()
+    cycle_view = cycle_fill[cycle_fill["facility"] == selected_facility].copy()
+    ekit_view = emergency_kits[emergency_kits["facility"] == selected_facility].copy()
+else:
+    facilities_view = facilities.copy()
+    adt_view = adt.copy()
+    cycle_view = cycle_fill.copy()
+    ekit_view = emergency_kits.copy()
+
+high_risk_count = int((facilities_view["risk_level"] == "High").sum())
+pending_orders = int(facilities_view["pending_orders"].sum())
+overdue_first_doses = int(facilities_view["overdue_first_doses"].sum())
+adt_admissions = int((adt_view["event_type"] == "Admission").sum())
+packed_total = int(cycle_view["packed"].sum()) if not cycle_view.empty else 0
+residents_due_total = int(cycle_view["residents_due"].sum()) if not cycle_view.empty else 0
+fill_completion = round((packed_total / residents_due_total) * 100) if residents_due_total else 0
+
+st.title("Missouri LTC Ops Center")
+st.markdown(
+    f"""
+    <div class="hero-card">
+        <div class="hero-title">Today's pharmacy workflow is visible end-to-end</div>
+        <div class="muted" style="margin-top:8px;">
+            Missouri-focused prototype for long-term care pharmacy operations: intake, first doses, cycle fill,
+            deliveries, emergency kits, and facility attention management.
+        </div>
+        <div style="margin-top:14px;">
+            <span class="pill">Region: {data['summary']['coverage_region']}</span>
+            <span class="pill">Delivery goal: {data['summary']['on_time_delivery_goal_pct']}% on-time</span>
+            <span class="pill">Admission goal: {data['summary']['same_day_admission_goal_minutes']} min first-dose setup</span>
+            <span class="pill">Demo date: {data['today']}</span>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+with kpi1:
+    metric_block("Facilities in view", len(facilities_view), "Filtered by facility selector in the sidebar.")
+with kpi2:
+    metric_block("Pending orders", pending_orders, "Outstanding orders needing processing or verification.")
+with kpi3:
+    metric_block("Overdue first doses", overdue_first_doses, "Residents currently beyond first-dose target windows.")
+with kpi4:
+    metric_block("Admissions today", adt_admissions, "ADT intake volume from the tracker below.")
+with kpi5:
+    metric_block("Cycle fill packed", f"{fill_completion}%", "Packed vs total residents due in cycle-fill worklists.")
+
+st.subheader("Missouri LTC pharmacy workflow")
+workflow_cols = st.columns(4)
+workflow_steps = [
+    ("1. Intake / ADT", "Admissions, discharges, transfers, docs, first-dose readiness"),
+    ("2. Clinical Verification", "Queue prioritization, STAT meds, pharmacist review"),
+    ("3. Fulfillment + Delivery", "Cycle fill, route readiness, temperature control, proof of delivery"),
+    ("4. Facility Follow-through", "Emergency kits, credits, callbacks, exceptions"),
+]
+for col, (title, detail) in zip(workflow_cols, workflow_steps):
+    with col:
+        st.markdown(f"<div class='block-card'><strong>{title}</strong><br><span class='muted'>{detail}</span></div>", unsafe_allow_html=True)
+
+tab_today, tab_risk, tab_adt, tab_fill, tab_cycle_team, tab_dollar, tab_status, tab_manage, tab_data = st.tabs(
+    [
+        "Today / Daily Ops",
+        "Facility Attention Queue",
+        "ADT Tracker",
+        "Cycle Fill / Delivery / E-Kits",
+        "Cycle Team Tracking",
+        f"💰 {DOLLAR_DISPLAY} Tracking",
+        "Progress Overview",
+        "⚙️ Facility Management",
+        "Data Explorer",
+    ]
+)
+
+with tab_today:
+    left, right = st.columns([1.4, 1])
+    with left:
+        st.markdown("### Today's operating board")
+        st.dataframe(daily_ops, use_container_width=True, hide_index=True)
+    with right:
+        st.markdown("### Shift priorities")
+        for priority_item in daily_ops[daily_ops["priority"].isin(["High", "Medium"])].to_dict("records"):
+            st.markdown(
+                f"""
+                <div class="block-card">
+                    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+                        <strong>{priority_item['time']} · {priority_item['lane']}</strong>
+                        {risk_badge(priority_item['priority'])}
+                    </div>
+                    <div style="margin-top:8px;">{priority_item['task']}</div>
+                    <div class="muted" style="margin-top:6px;">Owner: {priority_item['owner']} · {priority_item['status']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("### Today's callouts")
+    callout_cols = st.columns(3)
+    with callout_cols[0]:
+        st.warning(f"{high_risk_count} facility account(s) are in HIGH risk status.")
+    with callout_cols[1]:
+        st.info(f"{len(delivery[delivery['status'] == 'In progress'])} route(s) are already on the road.")
+    with callout_cols[2]:
+        at_risk_kits = int((emergency_kits['status'] == 'At Risk').sum())
+        st.error(f"{at_risk_kits} emergency-kit issue(s) need same-day follow-up.")
+
+with tab_risk:
+    st.markdown("### Facility attention queue")
+    attention = facilities_view.copy()
+    attention["risk_sort"] = attention["risk_level"].map(RISK_ORDER)
+    attention = attention.sort_values(["risk_sort", "overdue_first_doses", "pending_orders"], ascending=[True, False, False])
+
+    for row in attention.to_dict("records"):
+        st.markdown(
+            f"""
+            <div class="block-card">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
+                    <div>
+                        <div style="font-size:1.05rem;font-weight:800;">{row['facility']} · {row['city']}</div>
+                        <div class="muted">Beds {row['beds']} · Census {row['census']} · Last contact {row['last_contact']}</div>
+                    </div>
+                    <div>{risk_badge(row['risk_level'])}</div>
+                </div>
+                <div style="margin-top:12px;">{row['attention_reason']}</div>
+                <div style="margin-top:12px;">
+                    <span class="pill">Pending orders: {row['pending_orders']}</span>
+                    <span class="pill">Overdue first doses: {row['overdue_first_doses']}</span>
+                    <span class="pill">Cycle fill: {row['cycle_fill_progress_pct']}%</span>
+                    <span class="pill">Delivery: {row['delivery_status']}</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+with tab_adt:
+    st.markdown("### Admissions / discharges / transfers tracker")
+    adt_counts = adt_view["event_type"].value_counts().to_dict()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Admissions", adt_counts.get("Admission", 0))
+    c2.metric("Discharges", adt_counts.get("Discharge", 0))
+    c3.metric("Transfers", adt_counts.get("Transfer", 0))
+
+    adt_display = adt_view.copy()
+    adt_display["priority"] = adt_display["risk"].apply(lambda x: f"{x} priority")
+    st.dataframe(adt_display, use_container_width=True, hide_index=True)
+
+    st.markdown("### Intake actions needing coordination")
+    for event in adt_view.sort_values("effective_time").to_dict("records"):
+        if event["risk"] != "Low":
+            st.markdown(
+                f"- **{event['resident']}** ({event['event_type']} · {event['facility']}) — {event['notes']} _[{event['med_status']}]_"
+            )
+
+with tab_fill:
+    fill_left, fill_right = st.columns([1.1, 0.9])
+    with fill_left:
+        st.markdown("### Cycle fill visibility")
+        cycle_show = cycle_view.copy()
+        cycle_show["completion_pct"] = ((cycle_show["packed"] / cycle_show["residents_due"]) * 100).round(0).astype(int)
+        st.dataframe(cycle_show, use_container_width=True, hide_index=True)
+
+        st.markdown("### Emergency-kit visibility")
+        st.dataframe(ekit_view, use_container_width=True, hide_index=True)
+
+    with fill_right:
+        st.markdown("### Delivery route board")
+        for route in delivery.to_dict("records"):
+            st.markdown(
+                f"""
+                <div class="block-card">
+                    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;">
+                        <strong>{route['route']}</strong>
+                        {risk_badge(route['status'])}
+                    </div>
+                    <div class="muted" style="margin-top:6px;">Driver {route['driver']} · Stops {route['stops']}</div>
+                    <div style="margin-top:8px;">Next stop: {route['next_stop']} · ETA {route['eta']}</div>
+                    <div class="muted" style="margin-top:6px;">Temp control: {route['temperature_control']} · POD: {route['pod']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+with tab_cycle_team:
+    # Load dynamic facility config (respects Facility Management edits)
+    cycle_facilities_raw = load_facilities_config()
+    # Extract names and filter by frequency using start_date
+    cycle_facilities = {}
+    for day, fac_list in cycle_facilities_raw.items():
+        cycle_facilities[day] = [
+            f["name"] for f in fac_list 
+            if facility_active_this_week(f.get("frequency", "Weekly"), f.get("start_date"))
+        ]
+    
+    # Rebuild tracking state if facilities changed
+    if "cycle_team_tracking" not in st.session_state:
+        st.session_state.cycle_team_tracking = {
+            day: {fac: {stage: "" for stage in CYCLE_STAGE_ORDER} for fac in facs}
+            for day, facs in cycle_facilities.items()
+        }
+    else:
+        # Sync tracking state with current facility config
+        for day, facs in cycle_facilities.items():
+            if day not in st.session_state.cycle_team_tracking:
+                st.session_state.cycle_team_tracking[day] = {}
+            for fac in facs:
+                if fac not in st.session_state.cycle_team_tracking[day]:
+                    st.session_state.cycle_team_tracking[day][fac] = {stage: "" for stage in CYCLE_STAGE_ORDER}
+    
+    # Track unlocked future days (list of day abbreviations)
+    if "unlocked_days" not in st.session_state:
+        st.session_state.unlocked_days = []
+
+    st.markdown("### Cycle team tracking form")
+    today_abbr = _today_abbr()
+    week_dates = get_week_dates()
+    
+    # Get visible days (today + overdue) using dynamic config
+    def get_visible_days_dynamic(tracking_state: dict, facility_config: dict) -> list[str]:
+        today = _today_abbr()
+        if today not in DAY_ABBR_ORDER:
+            return DAY_ABBR_ORDER
+        today_idx = DAY_ABBR_ORDER.index(today)
+        visible = []
+        for i, day in enumerate(DAY_ABBR_ORDER):
+            if i == today_idx:
+                visible.append(day)
+                continue
+            if i > today_idx:
+                continue
+            day_state = tracking_state.get(day, {})
+            for fac in facility_config.get(day, []):
+                c, t = stage_counts(day_state.get(fac, {}))
+                if c < t:
+                    visible.append(day)
+                    break
+        return visible
+    
+    visible_days = get_visible_days_dynamic(st.session_state.cycle_team_tracking, cycle_facilities)
+    if not visible_days:
+        visible_days = [today_abbr] if today_abbr in DAY_ABBR_ORDER else DAY_ABBR_ORDER
+    
+    # Add unlocked future days
+    for unlocked in st.session_state.unlocked_days:
+        if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
+            visible_days.append(unlocked)
+    # Sort by day order
+    visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
+    
+    # Determine which future days can be unlocked
+    today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
+    future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
+    
+    # Find the next unlockable day (first future day not yet unlocked)
+    next_unlockable = None
+    for fd in future_days:
+        if fd not in st.session_state.unlocked_days:
+            next_unlockable = fd
+            break
+    
+    # Unlock/Re-lock controls
+    st.caption("Click a facility to expand and mark stages complete.")
+    
+    # Show unlock/relock buttons
+    btn_cols = st.columns(5)
+    col_idx = 0
+    
+    # Show re-lock buttons for unlocked days
+    for unlocked in st.session_state.unlocked_days:
+        if col_idx < 5:
+            with btn_cols[col_idx]:
+                if st.button(f"🔒 Lock {unlocked}", key=f"relock_{unlocked}", use_container_width=True):
+                    st.session_state.unlocked_days.remove(unlocked)
+                    # Also remove any days after this one
+                    unlocked_idx = DAY_ABBR_ORDER.index(unlocked)
+                    st.session_state.unlocked_days = [d for d in st.session_state.unlocked_days 
+                                                       if DAY_ABBR_ORDER.index(d) < unlocked_idx]
+                    st.rerun()
+            col_idx += 1
+    
+    # Show unlock button for next available day
+    if next_unlockable and col_idx < 5:
+        with btn_cols[col_idx]:
+            if st.button(f"🔓 Unlock {next_unlockable}", key=f"unlock_{next_unlockable}", use_container_width=True):
+                st.session_state.unlocked_days.append(next_unlockable)
+                st.rerun()
+    
+    # Create tab labels with dates
+    tab_labels = [f"{day} ({week_dates.get(day, '')})" for day in visible_days]
+    
+    day_tabs = st.tabs(tab_labels)
+    for day_tab, day in zip(day_tabs, visible_days):
+        with day_tab:
+            day_idx = DAY_ABBR_ORDER.index(day) if day in DAY_ABBR_ORDER else -1
+            is_future = day_idx > today_idx
+            is_past = day_idx < today_idx
+            
+            if is_past:
+                st.warning(f"Carryover from {day} — incomplete facilities still need attention.")
+            if is_future:
+                st.info(f"{day} — unlocked for early prep.")
+            day_state = st.session_state.cycle_team_tracking.get(day, {})
+            day_facs = cycle_facilities.get(day, [])
+            completed_facilities = sum(
+                1
+                for facility in day_facs
+                if stage_counts(day_state.get(facility, {}))[0] == len(CYCLE_STAGE_ORDER)
+            )
+            st.markdown(
+                f"<div class='block-card'><strong>{day} ({week_dates.get(day, '')}) cycle board</strong><br><span class='muted'>{completed_facilities} of {len(day_facs)} facilities fully finished.</span></div>",
+                unsafe_allow_html=True,
+            )
+            for facility in day_facs:
+                if facility not in day_state:
+                    day_state[facility] = {stage: "" for stage in CYCLE_STAGE_ORDER}
+                render_cycle_facility(day, facility, day_state[facility])
+
+with tab_dollar:
+    # Load dynamic facility config for $$ tracking
+    dollar_facilities_raw = load_facilities_config()
+    dollar_facilities = {}
+    for day, fac_list in dollar_facilities_raw.items():
+        dollar_facilities[day] = [
+            f["name"] for f in fac_list 
+            if facility_active_this_week(f.get("frequency", "Weekly"), f.get("start_date"))
+        ]
+    
+    # Initialize $$ tracking state
+    if "dollar_tracking" not in st.session_state:
+        st.session_state.dollar_tracking = {
+            day: {fac: {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER} for fac in facs}
+            for day, facs in dollar_facilities.items()
+        }
+    else:
+        # Sync tracking state with current facility config
+        for day, facs in dollar_facilities.items():
+            if day not in st.session_state.dollar_tracking:
+                st.session_state.dollar_tracking[day] = {}
+            for fac in facs:
+                if fac not in st.session_state.dollar_tracking[day]:
+                    st.session_state.dollar_tracking[day][fac] = {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER}
+    
+    # Track unlocked future days for $$ (separate from cycle tracking)
+    if "dollar_unlocked_days" not in st.session_state:
+        st.session_state.dollar_unlocked_days = []
+
+    st.markdown(f"### Cycle Fill {DOLLAR_DISPLAY} Tracking")
+    st.caption(f"Track billing-related cycle fill stages. Facilities marked with {DOLLAR_DISPLAY} suffix.")
+    
+    today_abbr = _today_abbr()
+    week_dates = get_week_dates()
+    
+    # Get visible days for $$ tracking
+    def get_visible_days_dollar(tracking_state: dict, facility_config: dict) -> list[str]:
+        today = _today_abbr()
+        if today not in DAY_ABBR_ORDER:
+            return DAY_ABBR_ORDER
+        today_idx = DAY_ABBR_ORDER.index(today)
+        visible = []
+        for i, day in enumerate(DAY_ABBR_ORDER):
+            if i == today_idx:
+                visible.append(day)
+                continue
+            if i > today_idx:
+                continue
+            day_state = tracking_state.get(day, {})
+            for fac in facility_config.get(day, []):
+                # Skip if "no meds" bypass is set
+                fac_state = day_state.get(fac, {})
+                if fac_state.get("_no_meds"):
+                    continue
+                c, t = stage_counts(fac_state, CYCLE_DOLLAR_STAGE_ORDER)
+                if c < t:
+                    visible.append(day)
+                    break
+        return visible
+    
+    visible_days = get_visible_days_dollar(st.session_state.dollar_tracking, dollar_facilities)
+    if not visible_days:
+        visible_days = [today_abbr] if today_abbr in DAY_ABBR_ORDER else DAY_ABBR_ORDER
+    
+    # Add unlocked future days
+    for unlocked in st.session_state.dollar_unlocked_days:
+        if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
+            visible_days.append(unlocked)
+    # Sort by day order
+    visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
+    
+    # Determine which future days can be unlocked
+    today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
+    future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
+    
+    # Find the next unlockable day
+    next_unlockable = None
+    for fd in future_days:
+        if fd not in st.session_state.dollar_unlocked_days:
+            next_unlockable = fd
+            break
+    
+    # Unlock/Re-lock controls
+    st.caption(f"Click a facility {DOLLAR_DISPLAY} to expand and mark stages complete.")
+    
+    btn_cols = st.columns(5)
+    col_idx = 0
+    
+    # Re-lock buttons for unlocked days
+    for unlocked in st.session_state.dollar_unlocked_days:
+        if col_idx < 5:
+            with btn_cols[col_idx]:
+                if st.button(f"🔒 Lock {unlocked}", key=f"$relock_{unlocked}", use_container_width=True):
+                    st.session_state.dollar_unlocked_days.remove(unlocked)
+                    unlocked_idx = DAY_ABBR_ORDER.index(unlocked)
+                    st.session_state.dollar_unlocked_days = [d for d in st.session_state.dollar_unlocked_days 
+                                                             if DAY_ABBR_ORDER.index(d) < unlocked_idx]
+                    st.rerun()
+            col_idx += 1
+    
+    # Unlock button for next available day
+    if next_unlockable and col_idx < 5:
+        with btn_cols[col_idx]:
+            if st.button(f"🔓 Unlock {next_unlockable}", key=f"$unlock_{next_unlockable}", use_container_width=True):
+                st.session_state.dollar_unlocked_days.append(next_unlockable)
+                st.rerun()
+    
+    # Create tab labels with dates
+    tab_labels = [f"{day} {DOLLAR_DISPLAY} ({week_dates.get(day, '')})" for day in visible_days]
+    
+    dollar_day_tabs = st.tabs(tab_labels)
+    for day_tab, day in zip(dollar_day_tabs, visible_days):
+        with day_tab:
+            day_idx = DAY_ABBR_ORDER.index(day) if day in DAY_ABBR_ORDER else -1
+            is_future = day_idx > today_idx
+            is_past = day_idx < today_idx
+            
+            if is_past:
+                st.warning(f"Carryover from {day} — incomplete {DOLLAR_DISPLAY} facilities still need attention.")
+            if is_future:
+                st.info(f"{day} {DOLLAR_DISPLAY} — unlocked for early prep.")
+            day_state = st.session_state.dollar_tracking.get(day, {})
+            day_facs = dollar_facilities.get(day, [])
+            completed_facilities = sum(
+                1
+                for facility in day_facs
+                if day_state.get(facility, {}).get("_no_meds") or 
+                   stage_counts(day_state.get(facility, {}), CYCLE_DOLLAR_STAGE_ORDER)[0] == len(CYCLE_DOLLAR_STAGE_ORDER)
+            )
+            st.markdown(
+                f"<div class='block-card'><strong>{day} {DOLLAR_DISPLAY} ({week_dates.get(day, '')}) billing board</strong><br><span class='muted'>{completed_facilities} of {len(day_facs)} facilities {DOLLAR_DISPLAY} complete.</span></div>",
+                unsafe_allow_html=True,
+            )
+            for facility in day_facs:
+                if facility not in day_state:
+                    day_state[facility] = {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER}
+                render_dollar_facility(day, facility, day_state[facility])
+
+with tab_status:
+    # Load dynamic facility config and extract names
+    status_facilities_raw = load_facilities_config()
+    week_num = get_current_week_number()
+    status_facilities = {}
+    for day, fac_list in status_facilities_raw.items():
+        status_facilities[day] = [
+            f["name"] for f in fac_list 
+            if facility_active_this_week(f.get("frequency", "Weekly"), f.get("start_date"))
+        ]
+    
+    if "cycle_team_tracking" not in st.session_state:
+        st.session_state.cycle_team_tracking = {
+            day: {fac: {stage: "" for stage in CYCLE_STAGE_ORDER} for fac in facs}
+            for day, facs in status_facilities.items()
+        }
+    tracking = st.session_state.cycle_team_tracking
+    
+    # Get dollar tracking for $$ Batch column
+    dollar_tracking = st.session_state.get("dollar_tracking", {})
+    
+    st.markdown("### Progress Overview")
+    st.caption(f"Supervisor summary as of {datetime.now().strftime('%A %Y-%m-%d %H:%M')} (Week {week_num})")
+
+    # Today's facilities with $$ Batch status
+    today_key = _today_abbr()
+    if today_key in status_facilities and status_facilities[today_key]:
+        st.markdown(f"#### Today ({today_key})")
+        today_rows = []
+        for fac in status_facilities[today_key]:
+            # Cycle tracking status
+            stage_map = tracking.get(today_key, {}).get(fac, {})
+            c, t = stage_counts(stage_map)
+            status = cycle_status_label(stage_map)
+            pct = int(c / t * 100) if t else 0
+            
+            # $$ Batch status
+            dollar_map = dollar_tracking.get(today_key, {}).get(fac, {})
+            if dollar_map.get("_no_meds"):
+                dollar_status = "No Meds"
+            else:
+                dc, dt = stage_counts(dollar_map, CYCLE_DOLLAR_STAGE_ORDER)
+                if dc == 0:
+                    dollar_status = "Not Started"
+                elif dc >= dt:
+                    dollar_status = "Completed"
+                else:
+                    dollar_status = "In Progress"
+            
+            today_rows.append({
+                "Facility": fac, 
+                "Stage Progress": f"{c}/{t}", 
+                "Pct": f"{pct}%", 
+                "Progress": status,
+                f"{DOLLAR_DISPLAY} Batch": dollar_status
+            })
+        today_df = pd.DataFrame(today_rows)
+        done_count = sum(1 for r in today_rows if r["Progress"] == "Completed")
+        dollar_done = sum(1 for r in today_rows if r[f"{DOLLAR_DISPLAY} Batch"] in ["Completed", "No Meds"])
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total facilities", len(today_rows))
+        m2.metric("Cycle Complete", done_count)
+        m3.metric("$\u200B$ Complete", dollar_done)  # zero-width space between $ to prevent LaTeX
+        m4.metric("Remaining", len(today_rows) - done_count)
+        st.dataframe(today_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No cycle schedule for today (weekend or no active facilities this week).")
+
+    # Overdue section
+    overdue_rows = []
+    if today_key in DAY_ABBR_ORDER:
+        today_idx = DAY_ABBR_ORDER.index(today_key)
+        for day in DAY_ABBR_ORDER[:today_idx]:
+            day_state = tracking.get(day, {})
+            for fac in status_facilities.get(day, []):
+                c, t = stage_counts(day_state.get(fac, {}))
+                if c < t:
+                    next_stage = next((s for s in CYCLE_STAGE_ORDER if not day_state.get(fac, {}).get(s)), "—")
+                    overdue_rows.append({"Day": day, "Facility": fac, "Progress": f"{c}/{t}", "Next Stage": next_stage})
+
+    if overdue_rows:
+        st.markdown("#### Overdue / Carryover")
+        st.warning(f"{len(overdue_rows)} facility(ies) from prior days still incomplete.")
+        st.dataframe(pd.DataFrame(overdue_rows), use_container_width=True, hide_index=True)
+    else:
+        st.success("No overdue facilities from prior days.")
+
+    # Excel log info
+    if CYCLE_LOG_FILE.exists():
+        st.markdown("#### Recent audit log entries")
+        if HAS_OPENPYXL:
+            log_wb = load_workbook(CYCLE_LOG_FILE)
+            log_ws = log_wb.active
+            all_rows = list(log_ws.iter_rows(min_row=2, values_only=True))
+        else:
+            all_rows = _read_basic_xlsx_rows(CYCLE_LOG_FILE)[1:]
+        if all_rows:
+            recent = all_rows[-10:]  # last 10
+            log_df = pd.DataFrame(recent, columns=["Facility", "Stage", "Initials", "Date", "Time"])
+            st.dataframe(log_df, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No log entries yet.")
+
+with tab_manage:
+    st.markdown("### Facility Management")
+    
+    # Load current config
+    current_config = load_facilities_config()
+    week_num = get_current_week_number()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # Two columns: Add facility and Admin Override
+    add_col, override_col = st.columns(2)
+    
+    with add_col:
+        st.markdown("#### ➕ Add Facility")
+        with st.form("add_facility_form", clear_on_submit=True):
+            new_facility_name = st.text_input("Name", placeholder="e.g., Sunny Acres")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                new_facility_day = st.selectbox("Day", DAY_ABBR_ORDER)
+            with c2:
+                new_facility_freq = st.selectbox("Freq", FREQUENCY_OPTIONS)
+            with c3:
+                new_start_date = st.date_input("Start", value=datetime.now())
+            
+            if st.form_submit_button("Add", use_container_width=True):
+                if new_facility_name.strip():
+                    fname = new_facility_name.strip()
+                    existing_names = [f["name"] for f in current_config.get(new_facility_day, [])]
+                    if fname not in existing_names:
+                        if new_facility_day not in current_config:
+                            current_config[new_facility_day] = []
+                        new_fac = {"name": fname, "frequency": new_facility_freq}
+                        if new_facility_freq != "Weekly":
+                            new_fac["start_date"] = new_start_date.strftime("%Y-%m-%d")
+                        current_config[new_facility_day].append(new_fac)
+                        save_facilities_config(current_config)
+                        st.rerun()
+    
+    with override_col:
+        st.markdown("#### 🔐 Admin Override")
+        st.caption("Mark all facilities complete or undo")
+        
+        # Track last override for undo
+        if "last_override" not in st.session_state:
+            st.session_state.last_override = None
+        
+        with st.form("admin_override_form"):
+            override_date = st.date_input("Date", value=datetime.now() - timedelta(days=1))
+            override_day = override_date.strftime("%a")[:3]
+            override_type = st.radio("Apply to:", ["Cycle Tracking", f"{DOLLAR_DISPLAY} Tracking", "Both"], horizontal=True)
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                do_complete = st.form_submit_button("✓ Mark Complete", use_container_width=True)
+            with c2:
+                do_undo = st.form_submit_button("↩ Undo/Clear", use_container_width=True)
+            
+            if do_complete or do_undo:
+                override_date_str = override_date.strftime("%Y-%m-%d")
+                facs_for_day = [f["name"] for f in current_config.get(override_day, [])]
+                
+                if do_complete:
+                    # Mark all complete
+                    if override_type in ["Cycle Tracking", "Both"]:
+                        if "cycle_team_tracking" not in st.session_state:
+                            st.session_state.cycle_team_tracking = {}
+                        if override_day not in st.session_state.cycle_team_tracking:
+                            st.session_state.cycle_team_tracking[override_day] = {}
+                        for fac in facs_for_day:
+                            st.session_state.cycle_team_tracking[override_day][fac] = {
+                                stage: "ADMIN" for stage in CYCLE_STAGE_ORDER
+                            }
+                            log_stage_to_excel(fac, "ADMIN OVERRIDE", f"ALL ({override_date_str})")
+                    
+                    if override_type in [f"{DOLLAR_DISPLAY} Tracking", "Both"]:
+                        if "dollar_tracking" not in st.session_state:
+                            st.session_state.dollar_tracking = {}
+                        if override_day not in st.session_state.dollar_tracking:
+                            st.session_state.dollar_tracking[override_day] = {}
+                        for fac in facs_for_day:
+                            st.session_state.dollar_tracking[override_day][fac] = {
+                                stage: "ADMIN" for stage in CYCLE_DOLLAR_STAGE_ORDER
+                            }
+                            log_stage_to_excel(f"{fac} $$", "ADMIN OVERRIDE", f"ALL ({override_date_str})")
+                    
+                    st.session_state.last_override = {"day": override_day, "type": override_type, "date": override_date_str}
+                    st.success(f"Marked {len(facs_for_day)} facilities complete for {override_day}")
+                
+                elif do_undo:
+                    # Clear/reset the day
+                    if override_type in ["Cycle Tracking", "Both"]:
+                        if override_day in st.session_state.get("cycle_team_tracking", {}):
+                            for fac in facs_for_day:
+                                st.session_state.cycle_team_tracking[override_day][fac] = {
+                                    stage: "" for stage in CYCLE_STAGE_ORDER
+                                }
+                            log_stage_to_excel(f"{override_day} ALL", "UNDO/CLEAR", override_date_str)
+                    
+                    if override_type in [f"{DOLLAR_DISPLAY} Tracking", "Both"]:
+                        if override_day in st.session_state.get("dollar_tracking", {}):
+                            for fac in facs_for_day:
+                                st.session_state.dollar_tracking[override_day][fac] = {
+                                    stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER
+                                }
+                            log_stage_to_excel(f"{override_day} ALL $$", "UNDO/CLEAR", override_date_str)
+                    
+                    st.session_state.last_override = None
+                    st.warning(f"Cleared {len(facs_for_day)} facilities for {override_day}")
+                
+                st.rerun()
+    
+    st.divider()
+    
+    # Compact frequency legend
+    st.caption(f"Week {week_num} · ✓=active · Weekly | Every 2wk (from start) | Every 4wk (from start)")
+    
+    # Edit/Remove facilities - compact view
+    for day in DAY_ABBR_ORDER:
+        day_facilities = current_config.get(day, [])
+        with st.expander(f"**{day}** ({len(day_facilities)})", expanded=False):
+            if not day_facilities:
+                st.caption("No facilities.")
+            else:
+                for i, fac_data in enumerate(list(day_facilities)):
+                    fac_name = fac_data["name"]
+                    fac_freq = fac_data.get("frequency", "Weekly")
+                    fac_start = fac_data.get("start_date")
+                    is_active = facility_active_this_week(fac_freq, fac_start)
+                    ind = "✓" if is_active else "○"
+                    
+                    # Single compact row
+                    cols = st.columns([0.3, 2, 1, 1, 0.8, 0.4])
+                    with cols[0]:
+                        st.write(ind)
+                    with cols[1]:
+                        st.write(fac_name)
+                    with cols[2]:
+                        new_freq = st.selectbox("F", FREQUENCY_OPTIONS, 
+                            index=FREQUENCY_OPTIONS.index(fac_freq) if fac_freq in FREQUENCY_OPTIONS else 0,
+                            key=f"f_{day}_{i}", label_visibility="collapsed")
+                        if new_freq != fac_freq:
+                            current_config[day][i]["frequency"] = new_freq
+                            if new_freq != "Weekly" and not fac_start:
+                                current_config[day][i]["start_date"] = today_str
+                            save_facilities_config(current_config)
+                            st.rerun()
+                    with cols[3]:
+                        if fac_freq != "Weekly":
+                            try:
+                                cur_date = datetime.strptime(fac_start, "%Y-%m-%d").date() if fac_start else datetime.now().date()
+                            except:
+                                cur_date = datetime.now().date()
+                            new_date = st.date_input("D", value=cur_date, key=f"d_{day}_{i}", label_visibility="collapsed")
+                            if new_date.strftime("%Y-%m-%d") != fac_start:
+                                current_config[day][i]["start_date"] = new_date.strftime("%Y-%m-%d")
+                                save_facilities_config(current_config)
+                                st.rerun()
+                        else:
+                            st.caption("—")
+                    with cols[4]:
+                        move_opts = ["—"] + [d for d in DAY_ABBR_ORDER if d != day]
+                        move_to = st.selectbox("M", move_opts, key=f"m_{day}_{i}", label_visibility="collapsed")
+                        if move_to != "—":
+                            fac_to_move = current_config[day].pop(i)
+                            if move_to not in current_config:
+                                current_config[move_to] = []
+                            current_config[move_to].append(fac_to_move)
+                            save_facilities_config(current_config)
+                            st.rerun()
+                    with cols[5]:
+                        if st.button("🗑", key=f"x_{day}_{i}"):
+                            current_config[day].pop(i)
+                            save_facilities_config(current_config)
+                            st.rerun()
+
+with tab_data:
+    st.markdown("### Demo data explorer")
+    st.caption("Local prototype data Turner can edit immediately.")
+    st.code(DATA_FILE.read_text(), language="json")
+
+st.divider()
+last_updated = datetime.fromtimestamp(DATA_FILE.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+st.caption(f"Missouri LTC Ops prototype ready · Data source: {DATA_FILE} · Last data update: {last_updated}")

@@ -1,0 +1,287 @@
+{
+  "generated_for": "Missouri LTC pharmacy operations prototype",
+  "today": "2026-03-11",
+  "summary": {
+    "pharmacy_name": "Command Center Pharmacy Services",
+    "coverage_region": "Missouri",
+    "on_time_delivery_goal_pct": 98,
+    "same_day_admission_goal_minutes": 90
+  },
+  "facilities": [
+    {
+      "facility": "Maple Grove Care Center",
+      "city": "St. Louis",
+      "beds": 132,
+      "census": 126,
+      "pending_orders": 18,
+      "overdue_first_doses": 2,
+      "cycle_fill_progress_pct": 88,
+      "delivery_status": "Truck loaded · ETA 09:10",
+      "risk_level": "High",
+      "attention_reason": "2 STAT antibiotics pending pharmacist verification; 1 discharge credit hold",
+      "last_contact": "06:42"
+    },
+    {
+      "facility": "Ozark Ridge Skilled Nursing",
+      "city": "Springfield",
+      "beds": 94,
+      "census": 89,
+      "pending_orders": 9,
+      "overdue_first_doses": 0,
+      "cycle_fill_progress_pct": 100,
+      "delivery_status": "Delivered 06:55",
+      "risk_level": "Low",
+      "attention_reason": "Stable morning; watch insulin refrigerator temp exception follow-up",
+      "last_contact": "06:58"
+    },
+    {
+      "facility": "River Bend Veterans Home",
+      "city": "Cape Girardeau",
+      "beds": 160,
+      "census": 154,
+      "pending_orders": 23,
+      "overdue_first_doses": 3,
+      "cycle_fill_progress_pct": 72,
+      "delivery_status": "Driver delayed by weather · ETA 10:05",
+      "risk_level": "High",
+      "attention_reason": "3 overdue first doses; controlled-substance proof-of-delivery missing from prior route",
+      "last_contact": "06:31"
+    },
+    {
+      "facility": "Prairie View Rehab & LTC",
+      "city": "Columbia",
+      "beds": 118,
+      "census": 111,
+      "pending_orders": 12,
+      "overdue_first_doses": 1,
+      "cycle_fill_progress_pct": 91,
+      "delivery_status": "Out for delivery · ETA 08:35",
+      "risk_level": "Medium",
+      "attention_reason": "Admission packet missing allergy confirmation",
+      "last_contact": "06:47"
+    },
+    {
+      "facility": "Kansas City Post Acute",
+      "city": "Kansas City",
+      "beds": 140,
+      "census": 136,
+      "pending_orders": 16,
+      "overdue_first_doses": 0,
+      "cycle_fill_progress_pct": 84,
+      "delivery_status": "Packaging exception on tote 3",
+      "risk_level": "Medium",
+      "attention_reason": "Cycle fill behind on 14 residents after late eMAR sync",
+      "last_contact": "06:54"
+    }
+  ],
+  "daily_ops": [
+    {
+      "time": "06:30",
+      "lane": "Verification",
+      "task": "Morning overnight queue cleared",
+      "owner": "RPh Jordan",
+      "priority": "Complete",
+      "status": "26 orders verified before shift huddle"
+    },
+    {
+      "time": "07:00",
+      "lane": "Admissions",
+      "task": "3 same-day admissions in intake",
+      "owner": "Intake Desk",
+      "priority": "High",
+      "status": "2 profiles built; 1 waiting on diagnosis sheet"
+    },
+    {
+      "time": "07:20",
+      "lane": "Cycle Fill",
+      "task": "Maple Grove strip-pack run",
+      "owner": "Packaging",
+      "priority": "High",
+      "status": "Finishing med-cart 4; antibiotics pulled for manual check"
+    },
+    {
+      "time": "07:45",
+      "lane": "Delivery",
+      "task": "Route 2 departed for Columbia + Jefferson City",
+      "owner": "Driver Leon",
+      "priority": "Medium",
+      "status": "First stop Prairie View ETA 08:35"
+    },
+    {
+      "time": "08:15",
+      "lane": "Emergency Kit",
+      "task": "River Bend e-kit restock review",
+      "owner": "Clinical Ops",
+      "priority": "High",
+      "status": "Lorazepam count variance needs callback"
+    },
+    {
+      "time": "09:00",
+      "lane": "Billing / Credits",
+      "task": "Discharge return reconciliation",
+      "owner": "AR Team",
+      "priority": "Medium",
+      "status": "5 pending credits over 48 hours"
+    }
+  ],
+  "adt_events": [
+    {
+      "resident": "Evelyn Carter",
+      "facility": "Maple Grove Care Center",
+      "event_type": "Admission",
+      "room": "214B",
+      "effective_time": "07:10",
+      "med_status": "Profile built · first dose due 09:00",
+      "documents": "Facesheet, allergies, diagnosis",
+      "risk": "High",
+      "notes": "Needs STAT cefdinir and insulin pen"
+    },
+    {
+      "resident": "Samuel Brooks",
+      "facility": "Prairie View Rehab & LTC",
+      "event_type": "Transfer",
+      "room": "101A → 203C",
+      "effective_time": "06:50",
+      "med_status": "Cart labels queued",
+      "documents": "Transfer order",
+      "risk": "Medium",
+      "notes": "Narcotic count sign-off still pending"
+    },
+    {
+      "resident": "Linda Hayes",
+      "facility": "River Bend Veterans Home",
+      "event_type": "Discharge",
+      "room": "309A",
+      "effective_time": "05:55",
+      "med_status": "7 return-to-stock lines identified",
+      "documents": "Discharge summary received",
+      "risk": "Medium",
+      "notes": "Hold credit until controlled-med destruction form arrives"
+    },
+    {
+      "resident": "Harold Dixon",
+      "facility": "Kansas City Post Acute",
+      "event_type": "Admission",
+      "room": "118",
+      "effective_time": "07:35",
+      "med_status": "Awaiting med history confirmation",
+      "documents": "Facesheet only",
+      "risk": "High",
+      "notes": "Hospital MAR incomplete; call nurse before fill"
+    },
+    {
+      "resident": "Mary Pollard",
+      "facility": "Ozark Ridge Skilled Nursing",
+      "event_type": "Discharge",
+      "room": "202",
+      "effective_time": "06:20",
+      "med_status": "Blister cards picked up by courier",
+      "documents": "Complete",
+      "risk": "Low",
+      "notes": "Ready for final credit release"
+    }
+  ],
+  "cycle_fill": [
+    {
+      "facility": "Maple Grove Care Center",
+      "window": "AM cycle",
+      "residents_due": 34,
+      "packed": 30,
+      "pharmacist_check": 26,
+      "delivery": "Truck loaded",
+      "exceptions": "4 manual packs + 2 fridge items",
+      "status": "Watch"
+    },
+    {
+      "facility": "Prairie View Rehab & LTC",
+      "window": "AM cycle",
+      "residents_due": 27,
+      "packed": 27,
+      "pharmacist_check": 27,
+      "delivery": "Out for delivery",
+      "exceptions": "1 admission add-on envelope",
+      "status": "On Track"
+    },
+    {
+      "facility": "Kansas City Post Acute",
+      "window": "Noon replenishment",
+      "residents_due": 19,
+      "packed": 14,
+      "pharmacist_check": 11,
+      "delivery": "Staging",
+      "exceptions": "Late eMAR sync impacted 5 residents",
+      "status": "At Risk"
+    },
+    {
+      "facility": "River Bend Veterans Home",
+      "window": "AM cycle",
+      "residents_due": 41,
+      "packed": 33,
+      "pharmacist_check": 29,
+      "delivery": "Delayed route",
+      "exceptions": "Weather + CII manifest follow-up",
+      "status": "At Risk"
+    }
+  ],
+  "delivery_runs": [
+    {
+      "route": "STL South",
+      "driver": "M. Allen",
+      "stops": 6,
+      "next_stop": "Maple Grove Care Center",
+      "eta": "09:10",
+      "temperature_control": "OK",
+      "pod": "Needed for prior controlled drop",
+      "status": "In progress"
+    },
+    {
+      "route": "Central MO",
+      "driver": "Leon P.",
+      "stops": 5,
+      "next_stop": "Prairie View Rehab & LTC",
+      "eta": "08:35",
+      "temperature_control": "OK",
+      "pod": "Not yet due",
+      "status": "In progress"
+    },
+    {
+      "route": "Bootheel / Southeast",
+      "driver": "S. Young",
+      "stops": 4,
+      "next_stop": "River Bend Veterans Home",
+      "eta": "10:05",
+      "temperature_control": "Cooler alarm cleared",
+      "pod": "Review previous stop",
+      "status": "Delayed"
+    }
+  ],
+  "emergency_kits": [
+    {
+      "facility": "Maple Grove Care Center",
+      "kit_type": "STAT box",
+      "seal_status": "Sealed",
+      "last_audit": "2026-03-08",
+      "expiring_within_30_days": 1,
+      "action": "Replace ondansetron ODT on next route",
+      "status": "Watch"
+    },
+    {
+      "facility": "River Bend Veterans Home",
+      "kit_type": "E-kit + narc box",
+      "seal_status": "Variance reported",
+      "last_audit": "2026-03-11",
+      "expiring_within_30_days": 0,
+      "action": "Call DON and reconcile lorazepam count",
+      "status": "At Risk"
+    },
+    {
+      "facility": "Ozark Ridge Skilled Nursing",
+      "kit_type": "STAT box",
+      "seal_status": "Sealed",
+      "last_audit": "2026-03-05",
+      "expiring_within_30_days": 2,
+      "action": "Swap insulin pens by Friday",
+      "status": "On Track"
+    }
+  ]
+}
