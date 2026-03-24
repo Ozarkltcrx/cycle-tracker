@@ -15,6 +15,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 import streamlit as st
+import yaml
+import streamlit_authenticator as stauth
 
 try:
     from openpyxl import load_workbook
@@ -622,6 +624,32 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
 ensure_cycle_log_file()
 
 st.set_page_config(page_title="Missouri LTC Ops Center", page_icon="💊", layout="wide")
+
+# --- Authentication ---
+CONFIG_PATH = APP_DIR / "config.yaml"
+if CONFIG_PATH.exists():
+    with open(CONFIG_PATH) as f:
+        config = yaml.safe_load(f)
+    
+    authenticator = stauth.Authenticate(
+        config['credentials'],
+        config['cookie']['name'],
+        config['cookie']['key'],
+        config['cookie']['expiry_days'],
+    )
+    
+    authenticator.login(location='main')
+    
+    if st.session_state.get("authentication_status") is None:
+        st.warning("Please enter your username and password")
+        st.stop()
+    elif st.session_state.get("authentication_status") is False:
+        st.error("Username/password is incorrect")
+        st.stop()
+    
+    # User is authenticated - show logout in sidebar later
+# --- End Authentication ---
+
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 data = load_demo_data()
@@ -637,6 +665,11 @@ selected_facility = "All facilities"
 
 with st.sidebar:
     st.title("💊 Missouri LTC")
+    # Show logged-in user and logout button
+    if CONFIG_PATH.exists() and st.session_state.get("authentication_status"):
+        st.caption(f"👤 Logged in as: **{st.session_state.get('name', 'User')}**")
+        authenticator.logout("Logout", "sidebar")
+        st.divider()
     st.caption("Concrete pharmacy operations prototype")
     selected_facility = st.selectbox("Facility filter", facility_names)
     st.caption(f"Demo data file: {DATA_FILE.name}")
