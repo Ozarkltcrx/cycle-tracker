@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Missouri LTC Pharmacy Operations Command Center
+Ozark LTC Rx Pharmacy Operations Command Center
 Run: streamlit run app.py
 """
 
@@ -382,7 +382,7 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"] * {
         color: white !important;
     }
-    /* Sidebar button styling */
+    /* Sidebar nav button styling */
     section[data-testid="stSidebar"] button {
         background: #2563eb !important;
         color: white !important;
@@ -396,6 +396,14 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"] button[kind="primary"] {
         background: #1e40af !important;
         border-left: 4px solid white !important;
+    }
+    /* Logout button - red */
+    section[data-testid="stSidebar"] button[kind="secondary"] {
+        background: #dc2626 !important;
+        color: white !important;
+    }
+    section[data-testid="stSidebar"] button[kind="secondary"]:hover {
+        background: #b91c1c !important;
     }
     .hero-card, .block-card {
         background: white;
@@ -638,7 +646,7 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
 
 ensure_cycle_log_file()
 
-st.set_page_config(page_title="Missouri LTC Ops Center", page_icon="💊", layout="wide")
+st.set_page_config(page_title="Ozark LTC Rx Ops Center", page_icon="💊", layout="wide")
 
 # --- Authentication ---
 CONFIG_PATH = APP_DIR / "config.yaml"
@@ -729,7 +737,7 @@ def is_admin_user():
 allowed_pages = get_user_permissions()
 
 with st.sidebar:
-    st.title("💊 Missouri LTC")
+    st.title("💊 Ozark LTC Rx")
     
     # Show logged-in user and logout button
     if CONFIG_PATH.exists() and st.session_state.get("authentication_status"):
@@ -785,7 +793,7 @@ packed_total = int(cycle_view["packed"].sum()) if not cycle_view.empty else 0
 residents_due_total = int(cycle_view["residents_due"].sum()) if not cycle_view.empty else 0
 fill_completion = round((packed_total / residents_due_total) * 100) if residents_due_total else 0
 
-st.title("Missouri LTC Ops Center")
+st.title("Ozark LTC Rx Ops Center")
 st.markdown(
     f"""
     <div class="hero-card">
@@ -817,7 +825,7 @@ with kpi4:
 with kpi5:
     metric_block("Cycle fill packed", f"{fill_completion}%", "Packed vs total residents due in cycle-fill worklists.")
 
-st.subheader("Missouri LTC pharmacy workflow")
+st.subheader("Ozark LTC Rx pharmacy workflow")
 workflow_cols = st.columns(4)
 workflow_steps = [
     ("1. Intake / ADT", "Admissions, discharges, transfers, docs, first-dose readiness"),
@@ -1690,4 +1698,4 @@ if current_page == "User Management" and is_admin_user():
 
 st.divider()
 last_updated = datetime.fromtimestamp(DATA_FILE.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-st.caption(f"Missouri LTC Ops prototype ready · Data source: {DATA_FILE} · Last data update: {last_updated}")
+st.caption(f"Ozark LTC Rx Ops prototype ready · Data source: {DATA_FILE} · Last data update: {last_updated}")
