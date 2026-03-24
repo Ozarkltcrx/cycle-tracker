@@ -690,9 +690,7 @@ ALL_PAGES = [
     "Facility Attention Queue",
     "ADT Tracker",
     "Cycle Fill / Delivery",
-    "Cycle Team Tracking",
-    f"{DOLLAR_DISPLAY} Tracking",
-    "Progress Overview",
+    "Cycle Team",
     "Facility Management",
     "Data Explorer",
     "User Management",
@@ -963,383 +961,268 @@ if current_page == "Cycle Fill / Delivery":
                 unsafe_allow_html=True,
             )
 
-# --- PAGE: Cycle Team Tracking ---
-if current_page == "Cycle Team Tracking":
-    # Load dynamic facility config (respects Facility Management edits)
-    cycle_facilities_raw = load_facilities_config()
-    # Extract names and filter by frequency using start_date
-    cycle_facilities = {}
-    for day, fac_list in cycle_facilities_raw.items():
-        cycle_facilities[day] = [
-            f["name"] for f in fac_list 
+# --- PAGE: Cycle Team (combined with internal tabs) ---
+if current_page == "Cycle Team":
+    st.title("Cycle Team")
+    
+    # Load facility config once for all tabs
+    _cycle_facilities_raw = load_facilities_config()
+    _cycle_facilities = {}
+    for _day, _fac_list in _cycle_facilities_raw.items():
+        _cycle_facilities[_day] = [
+            f["name"] for f in _fac_list 
             if facility_active_this_week(f.get("frequency", "Weekly"), f.get("start_date"))
         ]
     
-    # Rebuild tracking state if facilities changed
+    # Initialize tracking states
     if "cycle_team_tracking" not in st.session_state:
         st.session_state.cycle_team_tracking = {
             day: {fac: {stage: "" for stage in CYCLE_STAGE_ORDER} for fac in facs}
-            for day, facs in cycle_facilities.items()
+            for day, facs in _cycle_facilities.items()
         }
-    else:
-        # Sync tracking state with current facility config
+    if "dollar_tracking" not in st.session_state:
+        st.session_state.dollar_tracking = {
+            day: {fac: {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER} for fac in facs}
+            for day, facs in _cycle_facilities.items()
+        }
+    if "unlocked_days" not in st.session_state:
+        st.session_state.unlocked_days = []
+    if "dollar_unlocked_days" not in st.session_state:
+        st.session_state.dollar_unlocked_days = []
+    
+    # Create internal tabs - Dashboard first
+    cycle_tab1, cycle_tab2, cycle_tab3 = st.tabs([
+        "📊 Cycle Team Dashboard",
+        "📋 Cycle Team Tracking",
+        "💰 Cycle High Dollar Tracking"
+    ])
+    
+    # ============ TAB 1: DASHBOARD ============
+    with cycle_tab1:
+        week_num = get_current_week_number()
+        tracking = st.session_state.cycle_team_tracking
+        dollar_tracking = st.session_state.dollar_tracking
+        
+        st.markdown("### Cycle Team Dashboard")
+        st.caption(f"Supervisor summary as of {datetime.now().strftime('%A %Y-%m-%d %H:%M')} (Week {week_num})")
+        
+        today_key = _today_abbr()
+        if today_key in _cycle_facilities and _cycle_facilities[today_key]:
+            st.markdown(f"#### Today ({today_key})")
+            today_rows = []
+            for fac in _cycle_facilities[today_key]:
+                stage_map = tracking.get(today_key, {}).get(fac, {})
+                c, t = stage_counts(stage_map)
+                status = cycle_status_label(stage_map)
+                pct = int(c / t * 100) if t else 0
+                
+                dollar_map = dollar_tracking.get(today_key, {}).get(fac, {})
+                if dollar_map.get("_no_meds"):
+                    dollar_status = "No Meds"
+                else:
+                    dc, dt = stage_counts(dollar_map, CYCLE_DOLLAR_STAGE_ORDER)
+                    if dc == 0:
+                        dollar_status = "Not Started"
+                    elif dc >= dt:
+                        dollar_status = "Completed"
+                    else:
+                        dollar_status = "In Progress"
+                
+                today_rows.append({
+                    "Facility": fac,
+                    "Progress": f"{c}/{t} ({pct}%)",
+                    "Status": status,
+                    "High Dollar": dollar_status
+                })
+            
+            today_df = pd.DataFrame(today_rows)
+            done_count = sum(1 for r in today_rows if r["Status"] == "Completed")
+            dollar_done = sum(1 for r in today_rows if r["High Dollar"] in ["Completed", "No Meds"])
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Facilities", len(today_rows))
+            m2.metric("Cycle Complete", done_count)
+            m3.metric("High Dollar Complete", dollar_done)
+            m4.metric("Remaining", len(today_rows) - done_count)
+            st.dataframe(today_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No cycle schedule for today.")
+        
+        # Overdue section
+        overdue_rows = []
+        if today_key in DAY_ABBR_ORDER:
+            today_idx = DAY_ABBR_ORDER.index(today_key)
+            for day in DAY_ABBR_ORDER[:today_idx]:
+                day_state = tracking.get(day, {})
+                for fac in _cycle_facilities.get(day, []):
+                    c, t = stage_counts(day_state.get(fac, {}))
+                    if c < t:
+                        overdue_rows.append({"Day": day, "Facility": fac, "Progress": f"{c}/{t}"})
+        
+        if overdue_rows:
+            st.markdown("#### Overdue / Carryover")
+            st.warning(f"{len(overdue_rows)} facility(ies) from prior days still incomplete.")
+            st.dataframe(pd.DataFrame(overdue_rows), use_container_width=True, hide_index=True)
+        else:
+            st.success("No overdue facilities from prior days.")
+    
+    # ============ TAB 2: CYCLE TEAM TRACKING ============
+    with cycle_tab2:
+        cycle_facilities = _cycle_facilities
+        
         for day, facs in cycle_facilities.items():
             if day not in st.session_state.cycle_team_tracking:
                 st.session_state.cycle_team_tracking[day] = {}
             for fac in facs:
                 if fac not in st.session_state.cycle_team_tracking[day]:
                     st.session_state.cycle_team_tracking[day][fac] = {stage: "" for stage in CYCLE_STAGE_ORDER}
-    
-    # Track unlocked future days (list of day abbreviations)
-    if "unlocked_days" not in st.session_state:
-        st.session_state.unlocked_days = []
-
-    st.markdown("### Cycle team tracking form")
-    today_abbr = _today_abbr()
-    week_dates = get_week_dates()
-    
-    # Get visible days (today + overdue) using dynamic config
-    def get_visible_days_dynamic(tracking_state: dict, facility_config: dict) -> list[str]:
-        today = _today_abbr()
-        if today not in DAY_ABBR_ORDER:
-            return DAY_ABBR_ORDER
-        today_idx = DAY_ABBR_ORDER.index(today)
-        visible = []
-        for i, day in enumerate(DAY_ABBR_ORDER):
-            if i == today_idx:
-                visible.append(day)
-                continue
-            if i > today_idx:
-                continue
-            day_state = tracking_state.get(day, {})
-            for fac in facility_config.get(day, []):
-                c, t = stage_counts(day_state.get(fac, {}))
-                if c < t:
-                    visible.append(day)
-                    break
-        return visible
-    
-    visible_days = get_visible_days_dynamic(st.session_state.cycle_team_tracking, cycle_facilities)
-    if not visible_days:
-        visible_days = [today_abbr] if today_abbr in DAY_ABBR_ORDER else DAY_ABBR_ORDER
-    
-    # Add unlocked future days
-    for unlocked in st.session_state.unlocked_days:
-        if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
-            visible_days.append(unlocked)
-    # Sort by day order
-    visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
-    
-    # Determine which future days can be unlocked
-    today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
-    future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
-    
-    # Find the next unlockable day (first future day not yet unlocked)
-    next_unlockable = None
-    for fd in future_days:
-        if fd not in st.session_state.unlocked_days:
-            next_unlockable = fd
-            break
-    
-    # Unlock/Re-lock controls
-    st.caption("Click a facility to expand and mark stages complete.")
-    
-    # Show unlock/relock buttons
-    btn_cols = st.columns(5)
-    col_idx = 0
-    
-    # Show re-lock buttons for unlocked days
-    for unlocked in st.session_state.unlocked_days:
-        if col_idx < 5:
+        
+        st.markdown("### Cycle Team Tracking")
+        today_abbr = _today_abbr()
+        week_dates = get_week_dates()
+        today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
+        
+        def get_visible_days_cycle(ts, fc):
+            if today_abbr not in DAY_ABBR_ORDER:
+                return DAY_ABBR_ORDER
+            visible = []
+            for i, d in enumerate(DAY_ABBR_ORDER):
+                if i == today_idx:
+                    visible.append(d)
+                elif i < today_idx:
+                    for f in fc.get(d, []):
+                        c, t = stage_counts(ts.get(d, {}).get(f, {}))
+                        if c < t:
+                            visible.append(d)
+                            break
+            return visible
+        
+        visible_days = get_visible_days_cycle(st.session_state.cycle_team_tracking, cycle_facilities)
+        if not visible_days:
+            visible_days = [today_abbr] if today_abbr in DAY_ABBR_ORDER else DAY_ABBR_ORDER
+        
+        for unlocked in st.session_state.unlocked_days:
+            if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
+                visible_days.append(unlocked)
+        visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
+        
+        future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
+        next_unlockable = next((fd for fd in future_days if fd not in st.session_state.unlocked_days), None)
+        
+        st.caption("Click a facility to expand and mark stages complete.")
+        btn_cols = st.columns(5)
+        col_idx = 0
+        for unlocked in st.session_state.unlocked_days:
+            if col_idx < 5:
+                with btn_cols[col_idx]:
+                    if st.button(f"🔒 Lock {unlocked}", key=f"relock_{unlocked}", use_container_width=True):
+                        st.session_state.unlocked_days.remove(unlocked)
+                        st.session_state.unlocked_days = [d for d in st.session_state.unlocked_days if DAY_ABBR_ORDER.index(d) < DAY_ABBR_ORDER.index(unlocked)]
+                        st.rerun()
+                col_idx += 1
+        if next_unlockable and col_idx < 5:
             with btn_cols[col_idx]:
-                if st.button(f"🔒 Lock {unlocked}", key=f"relock_{unlocked}", use_container_width=True):
-                    st.session_state.unlocked_days.remove(unlocked)
-                    # Also remove any days after this one
-                    unlocked_idx = DAY_ABBR_ORDER.index(unlocked)
-                    st.session_state.unlocked_days = [d for d in st.session_state.unlocked_days 
-                                                       if DAY_ABBR_ORDER.index(d) < unlocked_idx]
+                if st.button(f"🔓 Unlock {next_unlockable}", key=f"unlock_{next_unlockable}", use_container_width=True):
+                    st.session_state.unlocked_days.append(next_unlockable)
                     st.rerun()
-            col_idx += 1
+        
+        day_tabs = st.tabs([f"{day} ({week_dates.get(day, '')})" for day in visible_days])
+        for day_tab, day in zip(day_tabs, visible_days):
+            with day_tab:
+                day_idx_loop = DAY_ABBR_ORDER.index(day) if day in DAY_ABBR_ORDER else -1
+                if day_idx_loop < today_idx:
+                    st.warning(f"Carryover from {day}")
+                if day_idx_loop > today_idx:
+                    st.info(f"{day} — unlocked for early prep")
+                day_state = st.session_state.cycle_team_tracking.get(day, {})
+                day_facs = cycle_facilities.get(day, [])
+                done = sum(1 for f in day_facs if stage_counts(day_state.get(f, {}))[0] == len(CYCLE_STAGE_ORDER))
+                st.markdown(f"**{day}**: {done} of {len(day_facs)} complete")
+                for facility in day_facs:
+                    if facility not in day_state:
+                        day_state[facility] = {s: "" for s in CYCLE_STAGE_ORDER}
+                    render_cycle_facility(day, facility, day_state[facility])
     
-    # Show unlock button for next available day
-    if next_unlockable and col_idx < 5:
-        with btn_cols[col_idx]:
-            if st.button(f"🔓 Unlock {next_unlockable}", key=f"unlock_{next_unlockable}", use_container_width=True):
-                st.session_state.unlocked_days.append(next_unlockable)
-                st.rerun()
-    
-    # Create tab labels with dates
-    tab_labels = [f"{day} ({week_dates.get(day, '')})" for day in visible_days]
-    
-    day_tabs = st.tabs(tab_labels)
-    for day_tab, day in zip(day_tabs, visible_days):
-        with day_tab:
-            day_idx = DAY_ABBR_ORDER.index(day) if day in DAY_ABBR_ORDER else -1
-            is_future = day_idx > today_idx
-            is_past = day_idx < today_idx
-            
-            if is_past:
-                st.warning(f"Carryover from {day} — incomplete facilities still need attention.")
-            if is_future:
-                st.info(f"{day} — unlocked for early prep.")
-            day_state = st.session_state.cycle_team_tracking.get(day, {})
-            day_facs = cycle_facilities.get(day, [])
-            completed_facilities = sum(
-                1
-                for facility in day_facs
-                if stage_counts(day_state.get(facility, {}))[0] == len(CYCLE_STAGE_ORDER)
-            )
-            st.markdown(
-                f"<div class='block-card'><strong>{day} ({week_dates.get(day, '')}) cycle board</strong><br><span class='muted'>{completed_facilities} of {len(day_facs)} facilities fully finished.</span></div>",
-                unsafe_allow_html=True,
-            )
-            for facility in day_facs:
-                if facility not in day_state:
-                    day_state[facility] = {stage: "" for stage in CYCLE_STAGE_ORDER}
-                render_cycle_facility(day, facility, day_state[facility])
-
-# --- PAGE: $$ Tracking ---
-if current_page == f"{DOLLAR_DISPLAY} Tracking":
-    # Load dynamic facility config for $$ tracking
-    dollar_facilities_raw = load_facilities_config()
-    dollar_facilities = {}
-    for day, fac_list in dollar_facilities_raw.items():
-        dollar_facilities[day] = [
-            f["name"] for f in fac_list 
-            if facility_active_this_week(f.get("frequency", "Weekly"), f.get("start_date"))
-        ]
-    
-    # Initialize $$ tracking state
-    if "dollar_tracking" not in st.session_state:
-        st.session_state.dollar_tracking = {
-            day: {fac: {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER} for fac in facs}
-            for day, facs in dollar_facilities.items()
-        }
-    else:
-        # Sync tracking state with current facility config
+    # ============ TAB 3: HIGH DOLLAR TRACKING ============
+    with cycle_tab3:
+        dollar_facilities = _cycle_facilities
+        
         for day, facs in dollar_facilities.items():
             if day not in st.session_state.dollar_tracking:
                 st.session_state.dollar_tracking[day] = {}
             for fac in facs:
                 if fac not in st.session_state.dollar_tracking[day]:
                     st.session_state.dollar_tracking[day][fac] = {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER}
-    
-    # Track unlocked future days for $$ (separate from cycle tracking)
-    if "dollar_unlocked_days" not in st.session_state:
-        st.session_state.dollar_unlocked_days = []
-
-    st.markdown(f"### Cycle Fill {DOLLAR_DISPLAY} Tracking")
-    st.caption(f"Track billing-related cycle fill stages. Facilities marked with {DOLLAR_DISPLAY} suffix.")
-    
-    today_abbr = _today_abbr()
-    week_dates = get_week_dates()
-    
-    # Get visible days for $$ tracking
-    def get_visible_days_dollar(tracking_state: dict, facility_config: dict) -> list[str]:
-        today = _today_abbr()
-        if today not in DAY_ABBR_ORDER:
-            return DAY_ABBR_ORDER
-        today_idx = DAY_ABBR_ORDER.index(today)
-        visible = []
-        for i, day in enumerate(DAY_ABBR_ORDER):
-            if i == today_idx:
-                visible.append(day)
-                continue
-            if i > today_idx:
-                continue
-            day_state = tracking_state.get(day, {})
-            for fac in facility_config.get(day, []):
-                # Skip if "no meds" bypass is set
-                fac_state = day_state.get(fac, {})
-                if fac_state.get("_no_meds"):
-                    continue
-                c, t = stage_counts(fac_state, CYCLE_DOLLAR_STAGE_ORDER)
-                if c < t:
-                    visible.append(day)
-                    break
-        return visible
-    
-    visible_days = get_visible_days_dollar(st.session_state.dollar_tracking, dollar_facilities)
-    if not visible_days:
-        visible_days = [today_abbr] if today_abbr in DAY_ABBR_ORDER else DAY_ABBR_ORDER
-    
-    # Add unlocked future days
-    for unlocked in st.session_state.dollar_unlocked_days:
-        if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
-            visible_days.append(unlocked)
-    # Sort by day order
-    visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
-    
-    # Determine which future days can be unlocked
-    today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
-    future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
-    
-    # Find the next unlockable day
-    next_unlockable = None
-    for fd in future_days:
-        if fd not in st.session_state.dollar_unlocked_days:
-            next_unlockable = fd
-            break
-    
-    # Unlock/Re-lock controls
-    st.caption(f"Click a facility {DOLLAR_DISPLAY} to expand and mark stages complete.")
-    
-    btn_cols = st.columns(5)
-    col_idx = 0
-    
-    # Re-lock buttons for unlocked days
-    for unlocked in st.session_state.dollar_unlocked_days:
-        if col_idx < 5:
+        
+        st.markdown("### Cycle High Dollar Tracking")
+        st.caption("Track high-dollar billing stages. Facilities shown with $$ suffix.")
+        today_abbr = _today_abbr()
+        week_dates = get_week_dates()
+        today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
+        
+        def get_visible_days_dollar(ts, fc):
+            if today_abbr not in DAY_ABBR_ORDER:
+                return DAY_ABBR_ORDER
+            visible = []
+            for i, d in enumerate(DAY_ABBR_ORDER):
+                if i == today_idx:
+                    visible.append(d)
+                elif i < today_idx:
+                    for f in fc.get(d, []):
+                        fs = ts.get(d, {}).get(f, {})
+                        if fs.get("_no_meds"):
+                            continue
+                        c, t = stage_counts(fs, CYCLE_DOLLAR_STAGE_ORDER)
+                        if c < t:
+                            visible.append(d)
+                            break
+            return visible
+        
+        visible_days = get_visible_days_dollar(st.session_state.dollar_tracking, dollar_facilities)
+        if not visible_days:
+            visible_days = [today_abbr] if today_abbr in DAY_ABBR_ORDER else DAY_ABBR_ORDER
+        
+        for unlocked in st.session_state.dollar_unlocked_days:
+            if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
+                visible_days.append(unlocked)
+        visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
+        
+        future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
+        next_unlockable = next((fd for fd in future_days if fd not in st.session_state.dollar_unlocked_days), None)
+        
+        st.caption("Click a facility $$ to expand and mark stages complete.")
+        btn_cols = st.columns(5)
+        col_idx = 0
+        for unlocked in st.session_state.dollar_unlocked_days:
+            if col_idx < 5:
+                with btn_cols[col_idx]:
+                    if st.button(f"🔒 Lock {unlocked}", key=f"$relock_{unlocked}", use_container_width=True):
+                        st.session_state.dollar_unlocked_days.remove(unlocked)
+                        st.session_state.dollar_unlocked_days = [d for d in st.session_state.dollar_unlocked_days if DAY_ABBR_ORDER.index(d) < DAY_ABBR_ORDER.index(unlocked)]
+                        st.rerun()
+                col_idx += 1
+        if next_unlockable and col_idx < 5:
             with btn_cols[col_idx]:
-                if st.button(f"🔒 Lock {unlocked}", key=f"$relock_{unlocked}", use_container_width=True):
-                    st.session_state.dollar_unlocked_days.remove(unlocked)
-                    unlocked_idx = DAY_ABBR_ORDER.index(unlocked)
-                    st.session_state.dollar_unlocked_days = [d for d in st.session_state.dollar_unlocked_days 
-                                                             if DAY_ABBR_ORDER.index(d) < unlocked_idx]
+                if st.button(f"🔓 Unlock {next_unlockable}", key=f"$unlock_{next_unlockable}", use_container_width=True):
+                    st.session_state.dollar_unlocked_days.append(next_unlockable)
                     st.rerun()
-            col_idx += 1
-    
-    # Unlock button for next available day
-    if next_unlockable and col_idx < 5:
-        with btn_cols[col_idx]:
-            if st.button(f"🔓 Unlock {next_unlockable}", key=f"$unlock_{next_unlockable}", use_container_width=True):
-                st.session_state.dollar_unlocked_days.append(next_unlockable)
-                st.rerun()
-    
-    # Create tab labels with dates
-    tab_labels = [f"{day} {DOLLAR_DISPLAY} ({week_dates.get(day, '')})" for day in visible_days]
-    
-    dollar_day_tabs = st.tabs(tab_labels)
-    for day_tab, day in zip(dollar_day_tabs, visible_days):
-        with day_tab:
-            day_idx = DAY_ABBR_ORDER.index(day) if day in DAY_ABBR_ORDER else -1
-            is_future = day_idx > today_idx
-            is_past = day_idx < today_idx
-            
-            if is_past:
-                st.warning(f"Carryover from {day} — incomplete {DOLLAR_DISPLAY} facilities still need attention.")
-            if is_future:
-                st.info(f"{day} {DOLLAR_DISPLAY} — unlocked for early prep.")
-            day_state = st.session_state.dollar_tracking.get(day, {})
-            day_facs = dollar_facilities.get(day, [])
-            completed_facilities = sum(
-                1
-                for facility in day_facs
-                if day_state.get(facility, {}).get("_no_meds") or 
-                   stage_counts(day_state.get(facility, {}), CYCLE_DOLLAR_STAGE_ORDER)[0] == len(CYCLE_DOLLAR_STAGE_ORDER)
-            )
-            st.markdown(
-                f"<div class='block-card'><strong>{day} {DOLLAR_DISPLAY} ({week_dates.get(day, '')}) billing board</strong><br><span class='muted'>{completed_facilities} of {len(day_facs)} facilities {DOLLAR_DISPLAY} complete.</span></div>",
-                unsafe_allow_html=True,
-            )
-            for facility in day_facs:
-                if facility not in day_state:
-                    day_state[facility] = {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER}
-                render_dollar_facility(day, facility, day_state[facility])
-
-# --- PAGE: Progress Overview ---
-if current_page == "Progress Overview":
-    # Load dynamic facility config and extract names
-    status_facilities_raw = load_facilities_config()
-    week_num = get_current_week_number()
-    status_facilities = {}
-    for day, fac_list in status_facilities_raw.items():
-        status_facilities[day] = [
-            f["name"] for f in fac_list 
-            if facility_active_this_week(f.get("frequency", "Weekly"), f.get("start_date"))
-        ]
-    
-    if "cycle_team_tracking" not in st.session_state:
-        st.session_state.cycle_team_tracking = {
-            day: {fac: {stage: "" for stage in CYCLE_STAGE_ORDER} for fac in facs}
-            for day, facs in status_facilities.items()
-        }
-    tracking = st.session_state.cycle_team_tracking
-    
-    # Get dollar tracking for $$ Batch column
-    dollar_tracking = st.session_state.get("dollar_tracking", {})
-    
-    st.markdown("### Progress Overview")
-    st.caption(f"Supervisor summary as of {datetime.now().strftime('%A %Y-%m-%d %H:%M')} (Week {week_num})")
-
-    # Today's facilities with $$ Batch status
-    today_key = _today_abbr()
-    if today_key in status_facilities and status_facilities[today_key]:
-        st.markdown(f"#### Today ({today_key})")
-        today_rows = []
-        for fac in status_facilities[today_key]:
-            # Cycle tracking status
-            stage_map = tracking.get(today_key, {}).get(fac, {})
-            c, t = stage_counts(stage_map)
-            status = cycle_status_label(stage_map)
-            pct = int(c / t * 100) if t else 0
-            
-            # $$ Batch status
-            dollar_map = dollar_tracking.get(today_key, {}).get(fac, {})
-            if dollar_map.get("_no_meds"):
-                dollar_status = "No Meds"
-            else:
-                dc, dt = stage_counts(dollar_map, CYCLE_DOLLAR_STAGE_ORDER)
-                if dc == 0:
-                    dollar_status = "Not Started"
-                elif dc >= dt:
-                    dollar_status = "Completed"
-                else:
-                    dollar_status = "In Progress"
-            
-            today_rows.append({
-                "Facility": fac, 
-                "Stage Progress": f"{c}/{t}", 
-                "Pct": f"{pct}%", 
-                "Progress": status,
-                f"{DOLLAR_DISPLAY} Batch": dollar_status
-            })
-        today_df = pd.DataFrame(today_rows)
-        done_count = sum(1 for r in today_rows if r["Progress"] == "Completed")
-        dollar_done = sum(1 for r in today_rows if r[f"{DOLLAR_DISPLAY} Batch"] in ["Completed", "No Meds"])
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Total facilities", len(today_rows))
-        m2.metric("Cycle Complete", done_count)
-        m3.metric("$\u200B$ Complete", dollar_done)  # zero-width space between $ to prevent LaTeX
-        m4.metric("Remaining", len(today_rows) - done_count)
-        st.dataframe(today_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No cycle schedule for today (weekend or no active facilities this week).")
-
-    # Overdue section
-    overdue_rows = []
-    if today_key in DAY_ABBR_ORDER:
-        today_idx = DAY_ABBR_ORDER.index(today_key)
-        for day in DAY_ABBR_ORDER[:today_idx]:
-            day_state = tracking.get(day, {})
-            for fac in status_facilities.get(day, []):
-                c, t = stage_counts(day_state.get(fac, {}))
-                if c < t:
-                    next_stage = next((s for s in CYCLE_STAGE_ORDER if not day_state.get(fac, {}).get(s)), "—")
-                    overdue_rows.append({"Day": day, "Facility": fac, "Progress": f"{c}/{t}", "Next Stage": next_stage})
-
-    if overdue_rows:
-        st.markdown("#### Overdue / Carryover")
-        st.warning(f"{len(overdue_rows)} facility(ies) from prior days still incomplete.")
-        st.dataframe(pd.DataFrame(overdue_rows), use_container_width=True, hide_index=True)
-    else:
-        st.success("No overdue facilities from prior days.")
-
-    # Excel log info
-    if CYCLE_LOG_FILE.exists():
-        st.markdown("#### Recent audit log entries")
-        if HAS_OPENPYXL:
-            log_wb = load_workbook(CYCLE_LOG_FILE)
-            log_ws = log_wb.active
-            all_rows = list(log_ws.iter_rows(min_row=2, values_only=True))
-        else:
-            all_rows = _read_basic_xlsx_rows(CYCLE_LOG_FILE)[1:]
-        if all_rows:
-            recent = all_rows[-10:]  # last 10
-            log_df = pd.DataFrame(recent, columns=["Facility", "Stage", "Initials", "Date", "Time"])
-            st.dataframe(log_df, use_container_width=True, hide_index=True)
-        else:
-            st.caption("No log entries yet.")
+        
+        day_tabs = st.tabs([f"{day} $$ ({week_dates.get(day, '')})" for day in visible_days])
+        for day_tab, day in zip(day_tabs, visible_days):
+            with day_tab:
+                day_idx_loop = DAY_ABBR_ORDER.index(day) if day in DAY_ABBR_ORDER else -1
+                if day_idx_loop < today_idx:
+                    st.warning(f"Carryover from {day}")
+                if day_idx_loop > today_idx:
+                    st.info(f"{day} $$ — unlocked for early prep")
+                day_state = st.session_state.dollar_tracking.get(day, {})
+                day_facs = dollar_facilities.get(day, [])
+                done = sum(1 for f in day_facs if day_state.get(f, {}).get("_no_meds") or stage_counts(day_state.get(f, {}), CYCLE_DOLLAR_STAGE_ORDER)[0] == len(CYCLE_DOLLAR_STAGE_ORDER))
+                st.markdown(f"**{day} $$**: {done} of {len(day_facs)} complete")
+                for facility in day_facs:
+                    if facility not in day_state:
+                        day_state[facility] = {s: "" for s in CYCLE_DOLLAR_STAGE_ORDER}
+                    render_dollar_facility(day, facility, day_state[facility])
 
 # --- PAGE: Facility Management ---
 if current_page == "Facility Management":
