@@ -402,14 +402,7 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"] button[kind="primary"]:hover {
         background: #1e3a8a !important;
     }
-    /* Logout button - red */
-    .logout-btn button {
-        background: #dc2626 !important;
-        color: white !important;
-    }
-    .logout-btn button:hover {
-        background: #b91c1c !important;
-    }
+
     .hero-card, .block-card {
         background: white;
         border: 1px solid #dbe4f0;
@@ -747,9 +740,19 @@ with st.sidebar:
     # Show logged-in user and logout button
     if CONFIG_PATH.exists() and st.session_state.get("authentication_status"):
         st.caption(f"👤 **{st.session_state.get('name', 'User')}**")
-        st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
-        authenticator.logout("Logout", "sidebar")
-        st.markdown('</div>', unsafe_allow_html=True)
+        # Red logout button using custom HTML
+        st.markdown("""
+            <style>
+            div[data-testid="stSidebar"] > div > div > div > div:nth-child(3) button {
+                background: #dc2626 !important;
+                color: white !important;
+            }
+            div[data-testid="stSidebar"] > div > div > div > div:nth-child(3) button:hover {
+                background: #b91c1c !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        authenticator.logout("🚪 Logout", "sidebar")
         st.divider()
     
     # Navigation
