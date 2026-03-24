@@ -382,16 +382,20 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"] * {
         color: white !important;
     }
-    /* Logout button styling */
+    /* Sidebar button styling */
     section[data-testid="stSidebar"] button {
-        background: white !important;
-        color: black !important;
-        border: 1px solid #ccc !important;
+        background: #2563eb !important;
+        color: white !important;
+        border: none !important;
+        margin-bottom: 4px !important;
     }
     section[data-testid="stSidebar"] button:hover {
-        background: #0f172a !important;
+        background: #1d4ed8 !important;
         color: white !important;
-        border: 1px solid white !important;
+    }
+    section[data-testid="stSidebar"] button[kind="primary"] {
+        background: #1e40af !important;
+        border-left: 4px solid white !important;
     }
     .hero-card, .block-card {
         background: white;
