@@ -674,22 +674,93 @@ emergency_kits = pd.DataFrame(data["emergency_kits"])
 facility_names = ["All facilities", *facilities["facility"].tolist()]
 selected_facility = "All facilities"
 
+# --- Permission System ---
+ALL_PAGES = [
+    "Today / Daily Ops",
+    "Facility Attention Queue",
+    "ADT Tracker",
+    "Cycle Fill / Delivery",
+    "Cycle Team Tracking",
+    f"{DOLLAR_DISPLAY} Tracking",
+    "Progress Overview",
+    "Facility Management",
+    "Data Explorer",
+    "User Management",
+]
+
+def get_user_permissions():
+    """Get list of pages the current user can access."""
+    if not CONFIG_PATH.exists():
+        return ALL_PAGES  # No auth = full access
+    
+    username = st.session_state.get("username")
+    if not username:
+        return []
+    
+    user_data = config.get("credentials", {}).get("usernames", {}).get(username, {})
+    role = user_data.get("role", "user")
+    
+    permissions = config.get("permissions", {})
+    
+    # Check user-specific permissions first
+    user_perms = permissions.get("users", {}).get(username)
+    if user_perms:
+        return user_perms
+    
+    # Fall back to role permissions
+    role_perms = permissions.get("roles", {}).get(role, [])
+    if "all" in role_perms:
+        return ALL_PAGES
+    return role_perms
+
+def is_admin_user():
+    if not CONFIG_PATH.exists():
+        return True
+    username = st.session_state.get("username")
+    if username and username in config.get("credentials", {}).get("usernames", {}):
+        return config["credentials"]["usernames"][username].get("role") == "admin"
+    return False
+
+# Get pages this user can see
+allowed_pages = get_user_permissions()
+
 with st.sidebar:
     st.title("💊 Missouri LTC")
+    
     # Show logged-in user and logout button
     if CONFIG_PATH.exists() and st.session_state.get("authentication_status"):
-        st.caption(f"👤 Logged in as: **{st.session_state.get('name', 'User')}**")
+        st.caption(f"👤 **{st.session_state.get('name', 'User')}**")
         authenticator.logout("Logout", "sidebar")
         st.divider()
+    
+    # Navigation
+    st.subheader("Navigation")
+    
+    # Only show pages user has access to
+    if "current_page" not in st.session_state:
+        st.session_state.current_page = allowed_pages[0] if allowed_pages else "Today / Daily Ops"
+    
+    # Ensure current page is allowed
+    if st.session_state.current_page not in allowed_pages and allowed_pages:
+        st.session_state.current_page = allowed_pages[0]
+    
+    for page in ALL_PAGES:
+        if page in allowed_pages:
+            if st.button(
+                f"{'→ ' if st.session_state.current_page == page else '   '}{page}",
+                key=f"nav_{page}",
+                use_container_width=True,
+                type="primary" if st.session_state.current_page == page else "secondary"
+            ):
+                st.session_state.current_page = page
+                st.rerun()
+    
+    st.divider()
     st.caption("Concrete pharmacy operations prototype")
     selected_facility = st.selectbox("Facility filter", facility_names)
-    st.caption(f"Demo data file: {DATA_FILE.name}")
     st.divider()
-    st.caption(f"Facilities: {len(facilities)}")
-    st.caption(f"ADT events today: {len(adt)}")
-    st.caption(f"Cycle-fill worklists: {len(cycle_fill)}")
-    st.caption(f"Delivery routes: {len(delivery)}")
-    st.caption(f"Emergency kits tracked: {len(emergency_kits)}")
+    st.caption(f"Facilities: {len(facilities)} · ADT: {len(adt)}")
+    st.caption(f"Routes: {len(delivery)} · E-Kits: {len(emergency_kits)}")
 
 if selected_facility != "All facilities":
     facilities_view = facilities[facilities["facility"] == selected_facility].copy()
@@ -754,35 +825,11 @@ for col, (title, detail) in zip(workflow_cols, workflow_steps):
     with col:
         st.markdown(f"<div class='block-card'><strong>{title}</strong><br><span class='muted'>{detail}</span></div>", unsafe_allow_html=True)
 
-# Check if current user is admin
-def is_admin_user():
-    if not CONFIG_PATH.exists():
-        return True  # No auth = everyone is admin
-    username = st.session_state.get("username")
-    if username and username in config.get("credentials", {}).get("usernames", {}):
-        return config["credentials"]["usernames"][username].get("role") == "admin"
-    return False
+# Get current page
+current_page = st.session_state.get("current_page", "Today / Daily Ops")
 
-# Build tab list - add Users tab only for admins
-tab_names = [
-    "Today / Daily Ops",
-    "Facility Attention Queue",
-    "ADT Tracker",
-    "Cycle Fill / Delivery / E-Kits",
-    "Cycle Team Tracking",
-    f"💰 {DOLLAR_DISPLAY} Tracking",
-    "Progress Overview",
-    "⚙️ Facility Management",
-    "Data Explorer",
-]
-if is_admin_user():
-    tab_names.append("👥 User Management")
-
-tabs = st.tabs(tab_names)
-tab_today, tab_risk, tab_adt, tab_fill, tab_cycle_team, tab_dollar, tab_status, tab_manage, tab_data = tabs[:9]
-tab_users = tabs[9] if len(tabs) > 9 else None
-
-with tab_today:
+# --- PAGE: Today / Daily Ops ---
+if current_page == "Today / Daily Ops":
     left, right = st.columns([1.4, 1])
     with left:
         st.markdown("### Today's operating board")
@@ -814,7 +861,8 @@ with tab_today:
         at_risk_kits = int((emergency_kits['status'] == 'At Risk').sum())
         st.error(f"{at_risk_kits} emergency-kit issue(s) need same-day follow-up.")
 
-with tab_risk:
+# --- PAGE: Facility Attention Queue ---
+if current_page == "Facility Attention Queue":
     st.markdown("### Facility attention queue")
     attention = facilities_view.copy()
     attention["risk_sort"] = attention["risk_level"].map(RISK_ORDER)
@@ -843,7 +891,8 @@ with tab_risk:
             unsafe_allow_html=True,
         )
 
-with tab_adt:
+# --- PAGE: ADT Tracker ---
+if current_page == "ADT Tracker":
     st.markdown("### Admissions / discharges / transfers tracker")
     adt_counts = adt_view["event_type"].value_counts().to_dict()
     c1, c2, c3 = st.columns(3)
@@ -862,7 +911,8 @@ with tab_adt:
                 f"- **{event['resident']}** ({event['event_type']} · {event['facility']}) — {event['notes']} _[{event['med_status']}]_"
             )
 
-with tab_fill:
+# --- PAGE: Cycle Fill / Delivery ---
+if current_page == "Cycle Fill / Delivery":
     fill_left, fill_right = st.columns([1.1, 0.9])
     with fill_left:
         st.markdown("### Cycle fill visibility")
@@ -891,7 +941,8 @@ with tab_fill:
                 unsafe_allow_html=True,
             )
 
-with tab_cycle_team:
+# --- PAGE: Cycle Team Tracking ---
+if current_page == "Cycle Team Tracking":
     # Load dynamic facility config (respects Facility Management edits)
     cycle_facilities_raw = load_facilities_config()
     # Extract names and filter by frequency using start_date
@@ -1025,7 +1076,8 @@ with tab_cycle_team:
                     day_state[facility] = {stage: "" for stage in CYCLE_STAGE_ORDER}
                 render_cycle_facility(day, facility, day_state[facility])
 
-with tab_dollar:
+# --- PAGE: $$ Tracking ---
+if current_page == f"{DOLLAR_DISPLAY} Tracking":
     # Load dynamic facility config for $$ tracking
     dollar_facilities_raw = load_facilities_config()
     dollar_facilities = {}
@@ -1163,7 +1215,8 @@ with tab_dollar:
                     day_state[facility] = {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER}
                 render_dollar_facility(day, facility, day_state[facility])
 
-with tab_status:
+# --- PAGE: Progress Overview ---
+if current_page == "Progress Overview":
     # Load dynamic facility config and extract names
     status_facilities_raw = load_facilities_config()
     week_num = get_current_week_number()
@@ -1266,7 +1319,8 @@ with tab_status:
         else:
             st.caption("No log entries yet.")
 
-with tab_manage:
+# --- PAGE: Facility Management ---
+if current_page == "Facility Management":
     st.markdown("### Facility Management")
     
     # Load current config
@@ -1440,104 +1494,195 @@ with tab_manage:
                             save_facilities_config(current_config)
                             st.rerun()
 
-with tab_data:
+# --- PAGE: Data Explorer ---
+if current_page == "Data Explorer":
     st.markdown("### Demo data explorer")
     st.caption("Local prototype data Turner can edit immediately.")
     st.code(DATA_FILE.read_text(), language="json")
 
-# User Management tab (admin only)
-if tab_users is not None:
-    with tab_users:
-        st.markdown("### 👥 User Management")
-        st.caption("Add, edit, or remove users. Admin only.")
+# --- PAGE: User Management (admin only) ---
+if current_page == "User Management" and is_admin_user():
+    st.markdown("### 👥 User Management")
+    st.caption("Add, edit, or remove users. Manage permissions.")
+    
+    # Load current config
+    with open(CONFIG_PATH) as f:
+        user_config = yaml.safe_load(f)
+    
+    users = user_config.get("credentials", {}).get("usernames", {})
+    
+    # Add new user
+    st.markdown("#### Add New User")
+    with st.form("add_user_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            new_username = st.text_input("Username", placeholder="e.g., jsmith")
+            new_display = st.text_input("Display Name", placeholder="e.g., John Smith")
+        with col2:
+            new_password = st.text_input("Password", type="password")
+            new_role = st.selectbox("Role", ["user", "admin"])
         
-        # Load current config
-        with open(CONFIG_PATH) as f:
-            user_config = yaml.safe_load(f)
-        
-        users = user_config.get("credentials", {}).get("usernames", {})
-        
-        # Add new user
-        st.markdown("#### Add New User")
-        with st.form("add_user_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                new_username = st.text_input("Username", placeholder="e.g., jsmith")
-                new_display = st.text_input("Display Name", placeholder="e.g., John Smith")
-            with col2:
-                new_password = st.text_input("Password", type="password", placeholder="Min 6 characters")
-                new_role = st.selectbox("Role", ["user", "admin"])
+        if st.form_submit_button("➕ Add User", use_container_width=True):
+            if new_username and new_password and new_display:
+                if len(new_password) < 6:
+                    st.error("Password must be at least 6 characters")
+                elif new_username in users:
+                    st.error(f"Username '{new_username}' already exists")
+                else:
+                    import bcrypt
+                    hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+                    user_config["credentials"]["usernames"][new_username] = {
+                        "name": new_display,
+                        "password": hashed,
+                        "role": new_role
+                    }
+                    with open(CONFIG_PATH, "w") as f:
+                        yaml.dump(user_config, f, default_flow_style=False)
+                    st.success(f"Added user '{new_username}'")
+                    st.rerun()
+            else:
+                st.warning("Please fill in all fields")
+    
+    st.divider()
+    
+    # List existing users
+    st.markdown("#### Current Users")
+    for username, user_data in users.items():
+        with st.expander(f"**{user_data.get('name', username)}** (@{username}) — {user_data.get('role', 'user')}"):
+            col1, col2, col3 = st.columns([2, 1, 1])
             
-            if st.form_submit_button("➕ Add User", use_container_width=True):
-                if new_username and new_password and new_display:
-                    if len(new_password) < 6:
-                        st.error("Password must be at least 6 characters")
-                    elif new_username in users:
-                        st.error(f"Username '{new_username}' already exists")
-                    else:
-                        import bcrypt
-                        hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
-                        user_config["credentials"]["usernames"][new_username] = {
-                            "name": new_display,
-                            "password": hashed,
-                            "role": new_role
-                        }
+            with col1:
+                # Change password
+                new_pwd = st.text_input("New Password", type="password", key=f"pwd_{username}", placeholder="Leave blank to keep")
+                if new_pwd:
+                    if st.button("Update Password", key=f"update_pwd_{username}"):
+                        if len(new_pwd) >= 6:
+                            import bcrypt
+                            hashed = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
+                            user_config["credentials"]["usernames"][username]["password"] = hashed
+                            with open(CONFIG_PATH, "w") as f:
+                                yaml.dump(user_config, f, default_flow_style=False)
+                            st.success("Password updated")
+                            st.rerun()
+                        else:
+                            st.error("Min 6 characters")
+            
+            with col2:
+                # Change role
+                current_role = user_data.get("role", "user")
+                new_role_sel = st.selectbox("Role", ["user", "admin"], 
+                                       index=0 if current_role == "user" else 1,
+                                       key=f"role_{username}")
+                if new_role_sel != current_role:
+                    if st.button("Update Role", key=f"update_role_{username}"):
+                        user_config["credentials"]["usernames"][username]["role"] = new_role_sel
                         with open(CONFIG_PATH, "w") as f:
                             yaml.dump(user_config, f, default_flow_style=False)
-                        st.success(f"Added user '{new_username}'")
+                        st.success(f"Role updated to {new_role_sel}")
+                        st.rerun()
+            
+            with col3:
+                # Delete user (can't delete yourself)
+                if username != st.session_state.get("username"):
+                    if st.button("🗑️ Delete", key=f"del_{username}", type="secondary"):
+                        del user_config["credentials"]["usernames"][username]
+                        with open(CONFIG_PATH, "w") as f:
+                            yaml.dump(user_config, f, default_flow_style=False)
+                        st.success(f"Deleted user '{username}'")
                         st.rerun()
                 else:
-                    st.warning("Please fill in all fields")
+                    st.caption("(You)")
+    
+    st.divider()
+    
+    # --- Permissions Management ---
+    st.markdown("#### 🔐 Page Permissions")
+    st.caption("Control which pages each role or user can access.")
+    
+    permissions = user_config.get("permissions", {"roles": {"admin": ["all"], "user": []}, "users": {}})
+    
+    # Role permissions
+    st.markdown("##### Role Defaults")
+    role_col1, role_col2 = st.columns(2)
+    
+    with role_col1:
+        st.markdown("**Admin Role**")
+        st.caption("Admins have access to all pages by default.")
+    
+    with role_col2:
+        st.markdown("**User Role**")
+        current_user_perms = permissions.get("roles", {}).get("user", [])
         
-        st.divider()
+        # Checkboxes for each page
+        new_user_perms = []
+        for page in ALL_PAGES:
+            if page == "User Management":
+                continue  # Never give regular users access to user management
+            checked = st.checkbox(page, value=(page in current_user_perms), key=f"perm_user_{page}")
+            if checked:
+                new_user_perms.append(page)
         
-        # List existing users
-        st.markdown("#### Current Users")
-        for username, user_data in users.items():
-            with st.expander(f"**{user_data.get('name', username)}** (@{username}) — {user_data.get('role', 'user')}"):
-                col1, col2, col3 = st.columns([2, 1, 1])
+        if new_user_perms != current_user_perms:
+            if st.button("Save User Role Permissions"):
+                if "permissions" not in user_config:
+                    user_config["permissions"] = {"roles": {}, "users": {}}
+                if "roles" not in user_config["permissions"]:
+                    user_config["permissions"]["roles"] = {}
+                user_config["permissions"]["roles"]["user"] = new_user_perms
+                with open(CONFIG_PATH, "w") as f:
+                    yaml.dump(user_config, f, default_flow_style=False)
+                st.success("User role permissions updated!")
+                st.rerun()
+    
+    st.divider()
+    
+    # Per-user permission overrides
+    st.markdown("##### Per-User Overrides")
+    st.caption("Override role permissions for specific users.")
+    
+    user_overrides = permissions.get("users", {})
+    
+    for username, user_data in users.items():
+        user_override = user_overrides.get(username)
+        role = user_data.get("role", "user")
+        
+        with st.expander(f"**{user_data.get('name', username)}** (@{username}) — {role}"):
+            has_override = user_override is not None
+            enable_override = st.checkbox("Enable custom permissions", value=has_override, key=f"override_enable_{username}")
+            
+            if enable_override:
+                current_perms = user_override if user_override else []
+                new_perms = []
                 
-                with col1:
-                    # Change password
-                    new_pwd = st.text_input("New Password", type="password", key=f"pwd_{username}", placeholder="Leave blank to keep current")
-                    if new_pwd:
-                        if st.button("Update Password", key=f"update_pwd_{username}"):
-                            if len(new_pwd) >= 6:
-                                import bcrypt
-                                hashed = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
-                                user_config["credentials"]["usernames"][username]["password"] = hashed
-                                with open(CONFIG_PATH, "w") as f:
-                                    yaml.dump(user_config, f, default_flow_style=False)
-                                st.success("Password updated")
-                                st.rerun()
-                            else:
-                                st.error("Password must be at least 6 characters")
+                cols = st.columns(3)
+                for i, page in enumerate(ALL_PAGES):
+                    if page == "User Management" and role != "admin":
+                        continue
+                    with cols[i % 3]:
+                        checked = st.checkbox(page, value=(page in current_perms), key=f"perm_{username}_{page}")
+                        if checked:
+                            new_perms.append(page)
                 
-                with col2:
-                    # Change role
-                    current_role = user_data.get("role", "user")
-                    new_role = st.selectbox("Role", ["user", "admin"], 
-                                           index=0 if current_role == "user" else 1,
-                                           key=f"role_{username}")
-                    if new_role != current_role:
-                        if st.button("Update Role", key=f"update_role_{username}"):
-                            user_config["credentials"]["usernames"][username]["role"] = new_role
-                            with open(CONFIG_PATH, "w") as f:
-                                yaml.dump(user_config, f, default_flow_style=False)
-                            st.success(f"Role updated to {new_role}")
-                            st.rerun()
-                
-                with col3:
-                    # Delete user (can't delete yourself)
-                    if username != st.session_state.get("username"):
-                        if st.button("🗑️ Delete", key=f"del_{username}", type="secondary"):
-                            del user_config["credentials"]["usernames"][username]
-                            with open(CONFIG_PATH, "w") as f:
-                                yaml.dump(user_config, f, default_flow_style=False)
-                            st.success(f"Deleted user '{username}'")
-                            st.rerun()
-                    else:
-                        st.caption("(Can't delete yourself)")
+                if st.button(f"Save {username}'s permissions", key=f"save_perm_{username}"):
+                    if "permissions" not in user_config:
+                        user_config["permissions"] = {"roles": {}, "users": {}}
+                    if "users" not in user_config["permissions"]:
+                        user_config["permissions"]["users"] = {}
+                    user_config["permissions"]["users"][username] = new_perms
+                    with open(CONFIG_PATH, "w") as f:
+                        yaml.dump(user_config, f, default_flow_style=False)
+                    st.success(f"Permissions for {username} updated!")
+                    st.rerun()
+            else:
+                if has_override:
+                    if st.button(f"Remove override (use role defaults)", key=f"remove_override_{username}"):
+                        del user_config["permissions"]["users"][username]
+                        with open(CONFIG_PATH, "w") as f:
+                            yaml.dump(user_config, f, default_flow_style=False)
+                        st.success(f"Override removed for {username}")
+                        st.rerun()
+                else:
+                    st.caption(f"Using {role} role defaults")
 
 st.divider()
 last_updated = datetime.fromtimestamp(DATA_FILE.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
