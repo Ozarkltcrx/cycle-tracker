@@ -382,6 +382,17 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"] * {
         color: white !important;
     }
+    /* Logout button styling */
+    section[data-testid="stSidebar"] button {
+        background: white !important;
+        color: black !important;
+        border: 1px solid #ccc !important;
+    }
+    section[data-testid="stSidebar"] button:hover {
+        background: #0f172a !important;
+        color: white !important;
+        border: 1px solid white !important;
+    }
     .hero-card, .block-card {
         background: white;
         border: 1px solid #dbe4f0;
@@ -743,19 +754,33 @@ for col, (title, detail) in zip(workflow_cols, workflow_steps):
     with col:
         st.markdown(f"<div class='block-card'><strong>{title}</strong><br><span class='muted'>{detail}</span></div>", unsafe_allow_html=True)
 
-tab_today, tab_risk, tab_adt, tab_fill, tab_cycle_team, tab_dollar, tab_status, tab_manage, tab_data = st.tabs(
-    [
-        "Today / Daily Ops",
-        "Facility Attention Queue",
-        "ADT Tracker",
-        "Cycle Fill / Delivery / E-Kits",
-        "Cycle Team Tracking",
-        f"💰 {DOLLAR_DISPLAY} Tracking",
-        "Progress Overview",
-        "⚙️ Facility Management",
-        "Data Explorer",
-    ]
-)
+# Check if current user is admin
+def is_admin_user():
+    if not CONFIG_PATH.exists():
+        return True  # No auth = everyone is admin
+    username = st.session_state.get("username")
+    if username and username in config.get("credentials", {}).get("usernames", {}):
+        return config["credentials"]["usernames"][username].get("role") == "admin"
+    return False
+
+# Build tab list - add Users tab only for admins
+tab_names = [
+    "Today / Daily Ops",
+    "Facility Attention Queue",
+    "ADT Tracker",
+    "Cycle Fill / Delivery / E-Kits",
+    "Cycle Team Tracking",
+    f"💰 {DOLLAR_DISPLAY} Tracking",
+    "Progress Overview",
+    "⚙️ Facility Management",
+    "Data Explorer",
+]
+if is_admin_user():
+    tab_names.append("👥 User Management")
+
+tabs = st.tabs(tab_names)
+tab_today, tab_risk, tab_adt, tab_fill, tab_cycle_team, tab_dollar, tab_status, tab_manage, tab_data = tabs[:9]
+tab_users = tabs[9] if len(tabs) > 9 else None
 
 with tab_today:
     left, right = st.columns([1.4, 1])
@@ -1419,6 +1444,100 @@ with tab_data:
     st.markdown("### Demo data explorer")
     st.caption("Local prototype data Turner can edit immediately.")
     st.code(DATA_FILE.read_text(), language="json")
+
+# User Management tab (admin only)
+if tab_users is not None:
+    with tab_users:
+        st.markdown("### 👥 User Management")
+        st.caption("Add, edit, or remove users. Admin only.")
+        
+        # Load current config
+        with open(CONFIG_PATH) as f:
+            user_config = yaml.safe_load(f)
+        
+        users = user_config.get("credentials", {}).get("usernames", {})
+        
+        # Add new user
+        st.markdown("#### Add New User")
+        with st.form("add_user_form", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                new_username = st.text_input("Username", placeholder="e.g., jsmith")
+                new_display = st.text_input("Display Name", placeholder="e.g., John Smith")
+            with col2:
+                new_password = st.text_input("Password", type="password", placeholder="Min 6 characters")
+                new_role = st.selectbox("Role", ["user", "admin"])
+            
+            if st.form_submit_button("➕ Add User", use_container_width=True):
+                if new_username and new_password and new_display:
+                    if len(new_password) < 6:
+                        st.error("Password must be at least 6 characters")
+                    elif new_username in users:
+                        st.error(f"Username '{new_username}' already exists")
+                    else:
+                        import bcrypt
+                        hashed = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+                        user_config["credentials"]["usernames"][new_username] = {
+                            "name": new_display,
+                            "password": hashed,
+                            "role": new_role
+                        }
+                        with open(CONFIG_PATH, "w") as f:
+                            yaml.dump(user_config, f, default_flow_style=False)
+                        st.success(f"Added user '{new_username}'")
+                        st.rerun()
+                else:
+                    st.warning("Please fill in all fields")
+        
+        st.divider()
+        
+        # List existing users
+        st.markdown("#### Current Users")
+        for username, user_data in users.items():
+            with st.expander(f"**{user_data.get('name', username)}** (@{username}) — {user_data.get('role', 'user')}"):
+                col1, col2, col3 = st.columns([2, 1, 1])
+                
+                with col1:
+                    # Change password
+                    new_pwd = st.text_input("New Password", type="password", key=f"pwd_{username}", placeholder="Leave blank to keep current")
+                    if new_pwd:
+                        if st.button("Update Password", key=f"update_pwd_{username}"):
+                            if len(new_pwd) >= 6:
+                                import bcrypt
+                                hashed = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
+                                user_config["credentials"]["usernames"][username]["password"] = hashed
+                                with open(CONFIG_PATH, "w") as f:
+                                    yaml.dump(user_config, f, default_flow_style=False)
+                                st.success("Password updated")
+                                st.rerun()
+                            else:
+                                st.error("Password must be at least 6 characters")
+                
+                with col2:
+                    # Change role
+                    current_role = user_data.get("role", "user")
+                    new_role = st.selectbox("Role", ["user", "admin"], 
+                                           index=0 if current_role == "user" else 1,
+                                           key=f"role_{username}")
+                    if new_role != current_role:
+                        if st.button("Update Role", key=f"update_role_{username}"):
+                            user_config["credentials"]["usernames"][username]["role"] = new_role
+                            with open(CONFIG_PATH, "w") as f:
+                                yaml.dump(user_config, f, default_flow_style=False)
+                            st.success(f"Role updated to {new_role}")
+                            st.rerun()
+                
+                with col3:
+                    # Delete user (can't delete yourself)
+                    if username != st.session_state.get("username"):
+                        if st.button("🗑️ Delete", key=f"del_{username}", type="secondary"):
+                            del user_config["credentials"]["usernames"][username]
+                            with open(CONFIG_PATH, "w") as f:
+                                yaml.dump(user_config, f, default_flow_style=False)
+                            st.success(f"Deleted user '{username}'")
+                            st.rerun()
+                    else:
+                        st.caption("(Can't delete yourself)")
 
 st.divider()
 last_updated = datetime.fromtimestamp(DATA_FILE.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")

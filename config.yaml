@@ -3,9 +3,11 @@ credentials:
     turner:
       name: Turner
       password: "$2b$12$B4WTLYTkfIo4jrQiWJSZvuT.qsc0nzPLYnEa49HNeA3dAt6WEUd7e"  # changeme123
+      role: admin
     admin:
       name: Admin
       password: "$2b$12$Ok01S9WAlkCzHDSDpVuGS.opW6TbBKXWg6tLjYaE37sedYCa6SS16"  # admin123
+      role: admin
 
 cookie:
   name: cycle_tracker_auth
