@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 import yaml
 import streamlit_authenticator as stauth
+from streamlit_autorefresh import st_autorefresh
 
 try:
     from openpyxl import load_workbook
@@ -71,6 +72,42 @@ CYCLE_LOG_FILE = DATA_DIR / "cycle_log.xlsx"
 
 DAY_ABBR_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 FACILITIES_FILE = DATA_DIR / "facilities.json"
+SHARED_STATE_FILE = DATA_DIR / "shared_tracking_state.json"
+
+
+def load_shared_state() -> dict:
+    """Load shared tracking state from JSON file."""
+    if SHARED_STATE_FILE.exists():
+        try:
+            return json.loads(SHARED_STATE_FILE.read_text())
+        except:
+            pass
+    return {"cycle_team_tracking": {}, "dollar_tracking": {}, "unlocked_days": [], "dollar_unlocked_days": []}
+
+
+def save_shared_state(state: dict) -> None:
+    """Save shared tracking state to JSON file."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SHARED_STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def sync_session_with_shared():
+    """Sync session state with shared state file."""
+    shared = load_shared_state()
+    for key in ["cycle_team_tracking", "dollar_tracking", "unlocked_days", "dollar_unlocked_days"]:
+        if key in shared and shared[key]:
+            st.session_state[key] = shared[key]
+
+
+def save_session_to_shared():
+    """Save relevant session state to shared file."""
+    state = {
+        "cycle_team_tracking": st.session_state.get("cycle_team_tracking", {}),
+        "dollar_tracking": st.session_state.get("dollar_tracking", {}),
+        "unlocked_days": st.session_state.get("unlocked_days", []),
+        "dollar_unlocked_days": st.session_state.get("dollar_unlocked_days", []),
+    }
+    save_shared_state(state)
 
 
 def get_week_dates() -> dict[str, str]:
@@ -558,6 +595,7 @@ def render_cycle_facility(day: str, facility: str, stage_map: dict[str, str]) ->
                                 stage_map[stage] = cleaned
                                 st.session_state.cycle_team_tracking[day][facility][stage] = cleaned
                                 log_stage_to_excel(facility, stage, cleaned)
+                                save_session_to_shared()  # Sync to shared state
                                 st.rerun()
                             else:
                                 st.warning("Enter initials to complete the stage.")
@@ -575,6 +613,7 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
             st.info("🚫 No meds to run — bypassed")
             if st.button(f"↩️ Undo bypass", key=f"undo_nomeds_{day}_{facility}"):
                 del st.session_state.dollar_tracking[day][facility]["_no_meds"]
+                save_session_to_shared()
                 st.rerun()
         return
     
@@ -593,6 +632,7 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
             if st.button("🚫 No meds to run", key=f"nomeds_{day}_{facility}", use_container_width=True):
                 st.session_state.dollar_tracking[day][facility]["_no_meds"] = True
                 log_stage_to_excel(f"{facility} $$", "NO MEDS", "BYPASS")
+                save_session_to_shared()
                 st.rerun()
         
         initials_summary = ", ".join(
@@ -637,6 +677,7 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
                                 stage_map[stage] = cleaned
                                 st.session_state.dollar_tracking[day][facility][stage] = cleaned
                                 log_stage_to_excel(f"{facility} $$", stage, cleaned)
+                                save_session_to_shared()
                                 st.rerun()
                             else:
                                 st.warning("Enter initials to complete the stage.")
@@ -670,6 +711,12 @@ if CONFIG_PATH.exists():
     
     # User is authenticated - show logout in sidebar later
 # --- End Authentication ---
+
+# --- Auto-refresh for real-time sync (every 30 seconds) ---
+st_autorefresh(interval=30000, limit=None, key="auto_refresh")
+
+# --- Sync with shared state ---
+sync_session_with_shared()
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
@@ -1118,12 +1165,14 @@ if current_page == "Cycle Team":
                     if st.button(f"🔒 Lock {unlocked}", key=f"relock_{unlocked}", use_container_width=True):
                         st.session_state.unlocked_days.remove(unlocked)
                         st.session_state.unlocked_days = [d for d in st.session_state.unlocked_days if DAY_ABBR_ORDER.index(d) < DAY_ABBR_ORDER.index(unlocked)]
+                        save_session_to_shared()
                         st.rerun()
                 col_idx += 1
         if next_unlockable and col_idx < 5:
             with btn_cols[col_idx]:
                 if st.button(f"🔓 Unlock {next_unlockable}", key=f"unlock_{next_unlockable}", use_container_width=True):
                     st.session_state.unlocked_days.append(next_unlockable)
+                    save_session_to_shared()
                     st.rerun()
         
         day_tabs = st.tabs([f"{day} ({week_dates.get(day, '')})" for day in visible_days])
@@ -1199,12 +1248,14 @@ if current_page == "Cycle Team":
                     if st.button(f"🔒 Lock {unlocked}", key=f"$relock_{unlocked}", use_container_width=True):
                         st.session_state.dollar_unlocked_days.remove(unlocked)
                         st.session_state.dollar_unlocked_days = [d for d in st.session_state.dollar_unlocked_days if DAY_ABBR_ORDER.index(d) < DAY_ABBR_ORDER.index(unlocked)]
+                        save_session_to_shared()
                         st.rerun()
                 col_idx += 1
         if next_unlockable and col_idx < 5:
             with btn_cols[col_idx]:
                 if st.button(f"🔓 Unlock {next_unlockable}", key=f"$unlock_{next_unlockable}", use_container_width=True):
                     st.session_state.dollar_unlocked_days.append(next_unlockable)
+                    save_session_to_shared()
                     st.rerun()
         
         day_tabs = st.tabs([f"{day} $$ ({week_dates.get(day, '')})" for day in visible_days])
