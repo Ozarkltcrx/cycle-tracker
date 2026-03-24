@@ -383,26 +383,31 @@ CUSTOM_CSS = """
         color: white !important;
     }
     /* Sidebar nav button styling */
-    section[data-testid="stSidebar"] button {
+    section[data-testid="stSidebar"] button[kind="secondary"] {
         background: #2563eb !important;
         color: white !important;
         border: none !important;
         margin-bottom: 4px !important;
     }
-    section[data-testid="stSidebar"] button:hover {
+    section[data-testid="stSidebar"] button[kind="secondary"]:hover {
         background: #1d4ed8 !important;
         color: white !important;
     }
     section[data-testid="stSidebar"] button[kind="primary"] {
         background: #1e40af !important;
+        color: white !important;
         border-left: 4px solid white !important;
+        margin-bottom: 4px !important;
+    }
+    section[data-testid="stSidebar"] button[kind="primary"]:hover {
+        background: #1e3a8a !important;
     }
     /* Logout button - red */
-    section[data-testid="stSidebar"] button[kind="secondary"] {
+    .logout-btn button {
         background: #dc2626 !important;
         color: white !important;
     }
-    section[data-testid="stSidebar"] button[kind="secondary"]:hover {
+    .logout-btn button:hover {
         background: #b91c1c !important;
     }
     .hero-card, .block-card {
@@ -742,7 +747,9 @@ with st.sidebar:
     # Show logged-in user and logout button
     if CONFIG_PATH.exists() and st.session_state.get("authentication_status"):
         st.caption(f"👤 **{st.session_state.get('name', 'User')}**")
+        st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
         authenticator.logout("Logout", "sidebar")
+        st.markdown('</div>', unsafe_allow_html=True)
         st.divider()
     
     # Navigation
