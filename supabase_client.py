@@ -210,3 +210,69 @@ def save_users_config_db(config: dict) -> None:
             ).execute()
         except Exception:
             pass
+
+
+# ── Bag Count Tracking ──────────────────────────────────────────────────────
+
+BAG_COUNT_FILE = DATA_DIR / "bag_count_state.json"
+
+def load_bag_count_state() -> dict:
+    """Load bag count tracking state.
+    
+    Structure:
+    {
+        "batches": {
+            "Facility Name": [
+                {"name": "Batch A", "id": "uuid"},
+                {"name": "Batch B", "id": "uuid"}
+            ]
+        },
+        "counts": {
+            "Mon": {
+                "Facility Name": {
+                    "batch_id": {"bags": 10, "census": 45},
+                    ...
+                }
+            }
+        },
+        "unlocked_days": []
+    }
+    """
+    default = {
+        "batches": {},
+        "counts": {},
+        "unlocked_days": [],
+    }
+    if _USE_SUPABASE:
+        try:
+            resp = _supabase_client.table("tracking_state").select("value").eq("key", "bag_counts").execute()
+            if resp.data:
+                return resp.data[0]["value"]
+        except Exception:
+            pass
+        return default
+
+    # Fallback: local JSON
+    if BAG_COUNT_FILE.exists():
+        try:
+            return json.loads(BAG_COUNT_FILE.read_text())
+        except Exception:
+            pass
+    return default
+
+
+def save_bag_count_state(state: dict) -> None:
+    """Persist bag count tracking state."""
+    if _USE_SUPABASE:
+        try:
+            _supabase_client.table("tracking_state").upsert(
+                {"key": "bag_counts", "value": state},
+                on_conflict="key",
+            ).execute()
+            return
+        except Exception:
+            pass
+
+    # Fallback: local JSON
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    BAG_COUNT_FILE.write_text(json.dumps(state, indent=2))

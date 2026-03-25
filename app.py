@@ -1036,10 +1036,11 @@ if current_page == "Cycle Team":
         st.session_state.dollar_unlocked_days = []
     
     # Create internal tabs - Dashboard first
-    cycle_tab1, cycle_tab2, cycle_tab3 = st.tabs([
+    cycle_tab1, cycle_tab2, cycle_tab3, cycle_tab4 = st.tabs([
         "📊 Cycle Team Dashboard",
         "📋 Cycle Team Tracking",
-        "💰 Cycle High Dollar Tracking"
+        "💰 Cycle High Dollar Tracking",
+        "📦 Cycle Bag Count"
     ])
     
     # ============ TAB 1: DASHBOARD ============
@@ -1273,6 +1274,233 @@ if current_page == "Cycle Team":
                         day_state[facility] = {s: "" for s in CYCLE_DOLLAR_STAGE_ORDER}
                     render_dollar_facility(day, facility, day_state[facility])
 
+    # ============ TAB 4: CYCLE BAG COUNT ============
+    with cycle_tab4:
+        import uuid
+        
+        # Load bag count state
+        bag_state = supa.load_bag_count_state()
+        if "bag_batches" not in st.session_state:
+            st.session_state.bag_batches = bag_state.get("batches", {})
+        if "bag_counts" not in st.session_state:
+            st.session_state.bag_counts = bag_state.get("counts", {})
+        if "bag_unlocked_days" not in st.session_state:
+            st.session_state.bag_unlocked_days = bag_state.get("unlocked_days", [])
+        
+        st.markdown("### Cycle Bag Count")
+        st.caption("Track bag counts and census per batch for each facility.")
+        
+        today_abbr = _today_abbr()
+        week_dates = get_week_dates()
+        today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
+        
+        # Determine visible days (today + 2 days prior if incomplete + unlocked future)
+        def get_visible_days_bag():
+            if today_abbr not in DAY_ABBR_ORDER:
+                return DAY_ABBR_ORDER
+            visible = []
+            for i, d in enumerate(DAY_ABBR_ORDER):
+                if i == today_idx:
+                    visible.append(d)
+                elif i >= today_idx - 2 and i < today_idx:
+                    # Show up to 2 days prior
+                    visible.append(d)
+            return visible
+        
+        visible_days = get_visible_days_bag()
+        for unlocked in st.session_state.bag_unlocked_days:
+            if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
+                visible_days.append(unlocked)
+        visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
+        
+        future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
+        next_unlockable = next((fd for fd in future_days if fd not in st.session_state.bag_unlocked_days), None)
+        
+        # Lock/Unlock buttons
+        btn_cols = st.columns(5)
+        col_idx = 0
+        for unlocked in st.session_state.bag_unlocked_days:
+            if col_idx < 5:
+                with btn_cols[col_idx]:
+                    if st.button(f"🔒 Lock {unlocked}", key=f"bag_relock_{unlocked}", use_container_width=True):
+                        st.session_state.bag_unlocked_days.remove(unlocked)
+                        st.session_state.bag_unlocked_days = [d for d in st.session_state.bag_unlocked_days if DAY_ABBR_ORDER.index(d) < DAY_ABBR_ORDER.index(unlocked)]
+                        supa.save_bag_count_state({
+                            "batches": st.session_state.bag_batches,
+                            "counts": st.session_state.bag_counts,
+                            "unlocked_days": st.session_state.bag_unlocked_days,
+                        })
+                        st.rerun()
+                col_idx += 1
+        if next_unlockable and col_idx < 5:
+            with btn_cols[col_idx]:
+                if st.button(f"🔓 Unlock {next_unlockable}", key=f"bag_unlock_{next_unlockable}", use_container_width=True):
+                    st.session_state.bag_unlocked_days.append(next_unlockable)
+                    supa.save_bag_count_state({
+                        "batches": st.session_state.bag_batches,
+                        "counts": st.session_state.bag_counts,
+                        "unlocked_days": st.session_state.bag_unlocked_days,
+                    })
+                    st.rerun()
+        
+        # Batch Management in expander
+        with st.expander("⚙️ Manage Batches (per facility)", expanded=False):
+            st.caption("Each facility has its own batches. Add/remove batches here.")
+            
+            bag_facilities = _cycle_facilities
+            all_facs = []
+            for day_facs in bag_facilities.values():
+                all_facs.extend(day_facs)
+            all_facs = sorted(set(all_facs))
+            
+            if all_facs:
+                selected_fac = st.selectbox("Select Facility", all_facs, key="batch_mgmt_fac")
+                
+                # Show current batches for this facility
+                current_batches = st.session_state.bag_batches.get(selected_fac, [])
+                
+                if current_batches:
+                    st.markdown(f"**Current batches for {selected_fac}:**")
+                    for i, batch in enumerate(current_batches):
+                        bc1, bc2 = st.columns([3, 1])
+                        with bc1:
+                            st.text(f"• {batch['name']}")
+                        with bc2:
+                            if st.button("🗑️", key=f"del_batch_{selected_fac}_{batch['id']}", help="Remove batch"):
+                                st.session_state.bag_batches[selected_fac] = [b for b in current_batches if b['id'] != batch['id']]
+                                supa.save_bag_count_state({
+                                    "batches": st.session_state.bag_batches,
+                                    "counts": st.session_state.bag_counts,
+                                    "unlocked_days": st.session_state.bag_unlocked_days,
+                                })
+                                st.rerun()
+                else:
+                    st.info(f"No batches defined for {selected_fac} yet.")
+                
+                # Add new batch
+                with st.form(f"add_batch_form_{selected_fac}", clear_on_submit=True):
+                    new_batch_name = st.text_input("New Batch Name", placeholder="e.g., A Wing, Main Building")
+                    if st.form_submit_button("➕ Add Batch", use_container_width=True):
+                        if new_batch_name.strip():
+                            if selected_fac not in st.session_state.bag_batches:
+                                st.session_state.bag_batches[selected_fac] = []
+                            st.session_state.bag_batches[selected_fac].append({
+                                "name": new_batch_name.strip(),
+                                "id": str(uuid.uuid4())[:8]
+                            })
+                            supa.save_bag_count_state({
+                                "batches": st.session_state.bag_batches,
+                                "counts": st.session_state.bag_counts,
+                                "unlocked_days": st.session_state.bag_unlocked_days,
+                            })
+                            st.rerun()
+        
+        st.divider()
+        
+        # Day tabs for bag count entry
+        if visible_days:
+            day_tabs = st.tabs([f"📦 {day} ({week_dates.get(day, '')})" for day in visible_days])
+            for day_tab, day in zip(day_tabs, visible_days):
+                with day_tab:
+                    day_idx_loop = DAY_ABBR_ORDER.index(day) if day in DAY_ABBR_ORDER else -1
+                    if day_idx_loop < today_idx - 2:
+                        st.warning(f"Viewing older day: {day}")
+                    if day_idx_loop > today_idx:
+                        st.info(f"{day} — unlocked for early prep")
+                    
+                    day_facs = _cycle_facilities.get(day, [])
+                    
+                    if not day_facs:
+                        st.info(f"No facilities scheduled for {day}")
+                        continue
+                    
+                    # Initialize day in counts if needed
+                    if day not in st.session_state.bag_counts:
+                        st.session_state.bag_counts[day] = {}
+                    
+                    # Calculate totals for the day
+                    day_total_bags = 0
+                    day_total_census = 0
+                    
+                    for facility in day_facs:
+                        batches = st.session_state.bag_batches.get(facility, [])
+                        
+                        if facility not in st.session_state.bag_counts[day]:
+                            st.session_state.bag_counts[day][facility] = {}
+                        
+                        fac_counts = st.session_state.bag_counts[day][facility]
+                        
+                        # Calculate facility totals
+                        fac_total_bags = sum(fac_counts.get(b['id'], {}).get('bags', 0) or 0 for b in batches)
+                        fac_total_census = sum(fac_counts.get(b['id'], {}).get('census', 0) or 0 for b in batches)
+                        day_total_bags += fac_total_bags
+                        day_total_census += fac_total_census
+                        
+                        with st.expander(f"**{facility}** — {len(batches)} batch(es) | Bags: {fac_total_bags} | Census: {fac_total_census}", expanded=False):
+                            if not batches:
+                                st.warning(f"No batches defined for {facility}. Add batches in 'Manage Batches' above.")
+                            else:
+                                # Column headers
+                                hdr1, hdr2, hdr3 = st.columns([2, 1, 1])
+                                with hdr1:
+                                    st.caption("Batch")
+                                with hdr2:
+                                    st.caption("Bags")
+                                with hdr3:
+                                    st.caption("Census")
+                                
+                                # Create a grid for batch entry
+                                for batch in batches:
+                                    batch_id = batch['id']
+                                    batch_name = batch['name']
+                                    
+                                    if batch_id not in fac_counts:
+                                        fac_counts[batch_id] = {'bags': None, 'census': None}
+                                    
+                                    col1, col2, col3 = st.columns([2, 1, 1])
+                                    with col1:
+                                        st.markdown(f"**{batch_name}**")
+                                    with col2:
+                                        new_bags = st.number_input(
+                                            "Bags",
+                                            min_value=0,
+                                            value=fac_counts[batch_id].get('bags') or 0,
+                                            key=f"bags_{day}_{facility}_{batch_id}",
+                                            label_visibility="collapsed"
+                                        )
+                                        if new_bags != fac_counts[batch_id].get('bags'):
+                                            fac_counts[batch_id]['bags'] = new_bags
+                                            supa.save_bag_count_state({
+                                                "batches": st.session_state.bag_batches,
+                                                "counts": st.session_state.bag_counts,
+                                                "unlocked_days": st.session_state.bag_unlocked_days,
+                                            })
+                                    with col3:
+                                        new_census = st.number_input(
+                                            "Census",
+                                            min_value=0,
+                                            value=fac_counts[batch_id].get('census') or 0,
+                                            key=f"census_{day}_{facility}_{batch_id}",
+                                            label_visibility="collapsed"
+                                        )
+                                        if new_census != fac_counts[batch_id].get('census'):
+                                            fac_counts[batch_id]['census'] = new_census
+                                            supa.save_bag_count_state({
+                                                "batches": st.session_state.bag_batches,
+                                                "counts": st.session_state.bag_counts,
+                                                "unlocked_days": st.session_state.bag_unlocked_days,
+                                            })
+                                
+                                # Show facility totals
+                                st.markdown(f"**Total: {fac_total_bags} bags, {fac_total_census} census**")
+                    
+                    # Day summary
+                    st.divider()
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Facilities", len(day_facs))
+                    m2.metric("Total Bags", day_total_bags)
+                    m3.metric("Total Census", day_total_census)
+
 # --- PAGE: Facility Management ---
 if current_page == "Facility Management":
     st.markdown("### Facility Management")
@@ -1382,6 +1610,13 @@ if current_page == "Facility Management":
                     st.session_state.last_override = None
                     st.warning(f"Cleared {len(facs_for_day)} facilities for {override_day}")
                 
+                # Persist to Supabase/shared state
+                save_shared_state({
+                    "cycle_team_tracking": st.session_state.get("cycle_team_tracking", {}),
+                    "dollar_tracking": st.session_state.get("dollar_tracking", {}),
+                    "unlocked_days": st.session_state.get("unlocked_days", []),
+                    "dollar_unlocked_days": st.session_state.get("dollar_unlocked_days", []),
+                })
                 st.rerun()
     
     st.divider()
