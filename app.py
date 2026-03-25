@@ -1343,6 +1343,22 @@ if current_page == "Cycle Team":
                     })
                     st.rerun()
         
+        # Manual save button (in case auto-save failed)
+        save_col1, save_col2 = st.columns([1, 3])
+        with save_col1:
+            if st.button("💾 Save All to Database", key="manual_save_bags", use_container_width=True):
+                supa.save_bag_count_state({
+                    "batches": st.session_state.bag_batches,
+                    "counts": st.session_state.bag_counts,
+                    "unlocked_days": st.session_state.bag_unlocked_days,
+                })
+                st.success("✅ Saved to database!")
+        with save_col2:
+            if supa.using_supabase():
+                st.caption("🟢 Connected to Supabase")
+            else:
+                st.caption("🔴 Supabase not connected — data in session only")
+        
         # Batch Management in expander
         with st.expander("⚙️ Manage Batches (per facility)", expanded=False):
             st.caption("Each facility has its own batches. Add/remove batches here.")
