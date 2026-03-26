@@ -780,6 +780,7 @@ ALL_PAGES = [
     "Dashboard",
     "Cycle Team",
     "Facility Management",
+    "Pharmacy Management",
     "Data Explorer",
     "User Management",
 ]
@@ -917,9 +918,11 @@ if current_page == "Dashboard":
     dash_rows: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
-    # Previous days incomplete
+    # Previous days incomplete (only show last 2 days, hide older)
     if today_key in DAY_ABBR_ORDER:
-        for prior_day in DAY_ABBR_ORDER[:today_idx]:
+        # Only show overdue from the last 2 days (not older)
+        recent_cutoff = max(0, today_idx - 2)
+        for prior_day in DAY_ABBR_ORDER[recent_cutoff:today_idx]:
             for fac in _dash_facilities.get(prior_day, []):
                 sm = _dash_tracking.get(prior_day, {}).get(fac, {})
                 c, t = stage_counts(sm)
@@ -1139,11 +1142,12 @@ if current_page == "Cycle Team":
         else:
             st.info("No cycle schedule for today.")
         
-        # Overdue section
+        # Overdue section (only show last 2 days, hide older)
         overdue_rows = []
         if today_key in DAY_ABBR_ORDER:
             today_idx = DAY_ABBR_ORDER.index(today_key)
-            for day in DAY_ABBR_ORDER[:today_idx]:
+            recent_cutoff = max(0, today_idx - 2)
+            for day in DAY_ABBR_ORDER[recent_cutoff:today_idx]:
                 day_state = tracking.get(day, {})
                 for fac in _cycle_facilities.get(day, []):
                     c, t = stage_counts(day_state.get(fac, {}))
@@ -1248,10 +1252,54 @@ if current_page == "Cycle Team":
                     st.session_state.dollar_tracking[day][fac] = {stage: "" for stage in CYCLE_DOLLAR_STAGE_ORDER}
         
         st.markdown("### Cycle High Dollar Tracking")
-        st.caption("Track high-dollar billing stages. Facilities shown with $$ suffix.")
         today_abbr = _today_abbr()
         week_dates = get_week_dates()
         today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
+        week_num = get_current_week_number()
+        
+        st.caption(f"High-dollar billing summary as of {datetime.now().strftime('%A %Y-%m-%d %H:%M')} (Week {week_num})")
+        
+        # Dashboard summary - matching Cycle Team Dashboard style
+        if today_abbr in dollar_facilities and dollar_facilities[today_abbr]:
+            today_facs = dollar_facilities[today_abbr]
+            dollar_rows = []
+            for fac in today_facs:
+                dm = st.session_state.dollar_tracking.get(today_abbr, {}).get(fac, {})
+                if dm.get("_no_meds"):
+                    status = "No Meds"
+                    pct = 100
+                else:
+                    c, t = stage_counts(dm, CYCLE_DOLLAR_STAGE_ORDER)
+                    pct = int(c / t * 100) if t else 0
+                    if c == 0:
+                        status = "Not Started"
+                    elif c >= t:
+                        status = "Completed"
+                    else:
+                        status = "In Progress"
+                dollar_rows.append({
+                    "Facility": fac,
+                    "Progress": f"{c}/{t} ({pct}%)" if not dm.get("_no_meds") else "N/A",
+                    "Status": status
+                })
+            
+            # Summary metrics matching Cycle Team Dashboard
+            total = len(dollar_rows)
+            completed = sum(1 for r in dollar_rows if r["Status"] in ["Completed", "No Meds"])
+            in_progress = sum(1 for r in dollar_rows if r["Status"] == "In Progress")
+            not_started = sum(1 for r in dollar_rows if r["Status"] == "Not Started")
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Facilities", total)
+            m2.metric("Completed", completed)
+            m3.metric("In Progress", in_progress)
+            m4.metric("Not Started", not_started)
+            
+            st.dataframe(pd.DataFrame(dollar_rows), use_container_width=True, hide_index=True)
+        
+        st.divider()
+        st.markdown("#### Tracking Details")
+        st.caption("Click a facility $$ to expand and mark stages complete.")
         
         def get_visible_days_dollar(ts, fc):
             if today_abbr not in DAY_ABBR_ORDER:
@@ -1283,7 +1331,6 @@ if current_page == "Cycle Team":
         future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
         next_unlockable = next((fd for fd in future_days if fd not in st.session_state.dollar_unlocked_days), None)
         
-        st.caption("Click a facility $$ to expand and mark stages complete.")
         btn_cols = st.columns(5)
         col_idx = 0
         for unlocked in st.session_state.dollar_unlocked_days:
@@ -1367,9 +1414,9 @@ if current_page == "Cycle Team":
         btn_cols = st.columns(5)
         col_idx = 0
         
-        # Show "Day Complete" buttons for past days that are visible
-        past_visible = [d for d in visible_days if DAY_ABBR_ORDER.index(d) < today_idx]
-        for day in past_visible:
+        # Show "Day Complete" buttons for today and past days that are visible
+        completable_days = [d for d in visible_days if DAY_ABBR_ORDER.index(d) <= today_idx]
+        for day in completable_days:
             if col_idx < 5:
                 with btn_cols[col_idx]:
                     if st.button(f"✅ {day} ({week_dates.get(day, '')}) Complete", key=f"bag_complete_{day}", use_container_width=True):
@@ -1774,6 +1821,64 @@ if current_page == "Facility Management":
                             current_config[day].pop(i)
                             save_facilities_config(current_config)
                             st.rerun()
+
+# --- PAGE: Pharmacy Management ---
+if current_page == "Pharmacy Management":
+    st.markdown("### 🏥 Pharmacy Management")
+    st.caption("Facility directory and reference information.")
+    
+    # Load facilities from config
+    fac_config = load_facilities_config()
+    
+    # Build facility directory
+    all_facilities = []
+    for day, fac_list in fac_config.items():
+        for fac in fac_list:
+            fac_name = fac["name"] if isinstance(fac, dict) else fac
+            freq = fac.get("frequency", "Weekly") if isinstance(fac, dict) else "Weekly"
+            all_facilities.append({
+                "Facility": fac_name,
+                "Scheduled Day": day,
+                "Frequency": freq,
+            })
+    
+    # Remove duplicates (facility might be on multiple days)
+    seen_facs = set()
+    unique_facilities = []
+    for f in all_facilities:
+        if f["Facility"] not in seen_facs:
+            unique_facilities.append(f)
+            seen_facs.add(f["Facility"])
+    
+    st.markdown("#### 📋 Facility Directory")
+    st.caption(f"{len(unique_facilities)} facilities in system")
+    
+    if unique_facilities:
+        fac_df = pd.DataFrame(unique_facilities)
+        st.dataframe(fac_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No facilities configured yet.")
+    
+    st.divider()
+    
+    # Schedule overview
+    st.markdown("#### 📅 Weekly Schedule Overview")
+    for day in DAY_ABBR_ORDER:
+        day_facs = fac_config.get(day, [])
+        active_facs = [
+            (f["name"] if isinstance(f, dict) else f)
+            for f in day_facs
+            if facility_active_this_week(
+                f.get("frequency", "Weekly") if isinstance(f, dict) else "Weekly",
+                f.get("start_date") if isinstance(f, dict) else None
+            )
+        ]
+        with st.expander(f"**{day}** — {len(active_facs)} facilities this week"):
+            if active_facs:
+                for fac in active_facs:
+                    st.write(f"• {fac}")
+            else:
+                st.caption("No facilities scheduled")
 
 # --- PAGE: Data Explorer ---
 if current_page == "Data Explorer":
