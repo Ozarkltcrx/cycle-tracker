@@ -911,11 +911,46 @@ if current_page == "Dashboard":
         ]
 
     _dash_tracking = st.session_state.get("cycle_team_tracking", {})
-    _dash_dollar = st.session_state.get("dollar_tracking", {})
 
     today_key = _today_abbr()
     today_idx = DAY_ABBR_ORDER.index(today_key) if today_key in DAY_ABBR_ORDER else -1
     now_hour = datetime.now().hour + datetime.now().minute / 60.0
+
+    def get_status_with_timing(fac: str, stage_map: dict, is_overdue: bool = False) -> str:
+        """Determine status based on 30-min window vs 4-week average.
+        
+        Returns: Not Started, Running Behind, On Time, Ahead of Schedule, or Completed
+        """
+        c, t = stage_counts(stage_map)
+        
+        if c == 0:
+            return "Not Started"
+        if c >= t:
+            return "Completed"
+        
+        # In progress - check timing
+        if is_overdue:
+            return "Running Behind"
+        
+        avg_hour = supa.get_average_completion_hour(fac, "Facility finished", weeks=4)
+        if avg_hour is None:
+            return "On Time"  # No historical data
+        
+        diff_minutes = (now_hour - avg_hour) * 60
+        
+        if diff_minutes >= 30:
+            return "Running Behind"
+        elif diff_minutes <= -30:
+            return "Ahead of Schedule"
+        else:
+            return "On Time"
+
+    def get_current_task(stage_map: dict) -> str:
+        """Get the current task (first incomplete stage) or 'Done'."""
+        for stage in CYCLE_STAGE_ORDER:
+            if not stage_map.get(stage, ""):
+                return stage
+        return "Done"
 
     # Collect rows: today's facilities + previous-day incomplete
     dash_rows: list[dict] = []
@@ -923,29 +958,20 @@ if current_page == "Dashboard":
 
     # Previous days incomplete (only show last 2 days, hide older)
     if today_key in DAY_ABBR_ORDER:
-        # Only show overdue from the last 2 days (not older)
         recent_cutoff = max(0, today_idx - 2)
         for prior_day in DAY_ABBR_ORDER[recent_cutoff:today_idx]:
             for fac in _dash_facilities.get(prior_day, []):
                 sm = _dash_tracking.get(prior_day, {}).get(fac, {})
                 c, t = stage_counts(sm)
                 if c < t:
-                    pct = int(c / t * 100) if t else 0
-                    # Dollar status
-                    dm = _dash_dollar.get(prior_day, {}).get(fac, {})
-                    if dm.get("_no_meds"):
-                        dollar_st = "No Meds"
-                    else:
-                        dc, dt_ = stage_counts(dm, CYCLE_DOLLAR_STAGE_ORDER)
-                        dollar_st = "Completed" if dc >= dt_ else ("In Progress" if dc > 0 else "Not Started")
+                    status = get_status_with_timing(fac, sm, is_overdue=True)
+                    current_task = get_current_task(sm)
                     dash_rows.append({
-                        "Day": prior_day,
-                        "Facility": fac,
-                        "Progress": f"{c}/{t} ({pct}%)",
-                        "Status": f"Overdue ({prior_day})",
-                        "High Dollar": dollar_st,
-                        "_overdue": True,
-                        "_pct": pct,
+                        "Facility": f"{fac} ({prior_day})",
+                        "Tasks Completed": f"{c}/{t}",
+                        "Current Task": current_task,
+                        "Status": status,
+                        "_status": status,
                     })
                     seen.add((prior_day, fac))
 
@@ -955,105 +981,85 @@ if current_page == "Dashboard":
             continue
         sm = _dash_tracking.get(today_key, {}).get(fac, {})
         c, t = stage_counts(sm)
-        pct = int(c / t * 100) if t else 0
-        status_label = cycle_status_label(sm)
-
-        # Dollar status
-        dm = _dash_dollar.get(today_key, {}).get(fac, {})
-        if dm.get("_no_meds"):
-            dollar_st = "No Meds"
-        else:
-            dc, dt_ = stage_counts(dm, CYCLE_DOLLAR_STAGE_ORDER)
-            dollar_st = "Completed" if dc >= dt_ else ("In Progress" if dc > 0 else "Not Started")
-
-        # Smart status highlighting via 4-week average
-        avg_hour = supa.get_average_completion_hour(fac, "Facility finished", weeks=4)
-        highlight = ""
-        if avg_hour is not None:
-            diff_minutes = (now_hour - avg_hour) * 60
-            if status_label == "Completed":
-                # Completed: check if completed early
-                completion_times = supa.get_facility_completion_times(fac, "Facility finished", weeks=0)
-                # For today, just compare now vs average — if we're 30+ min before avg, green
-                if diff_minutes <= -30:
-                    highlight = "early"
-            else:
-                # Not complete yet
-                if diff_minutes >= 30:
-                    highlight = "late"
-
+        status = get_status_with_timing(fac, sm, is_overdue=False)
+        current_task = get_current_task(sm)
+        
         dash_rows.append({
-            "Day": today_key,
             "Facility": fac,
-            "Progress": f"{c}/{t} ({pct}%)",
-            "Status": status_label,
-            "High Dollar": dollar_st,
-            "_overdue": False,
-            "_pct": pct,
-            "_highlight": highlight,
+            "Tasks Completed": f"{c}/{t}",
+            "Current Task": current_task,
+            "Status": status,
+            "_status": status,
         })
 
     if dash_rows:
         # Summary metrics
         total = len(dash_rows)
-        completed = sum(1 for r in dash_rows if r["Status"] == "Completed")
-        overdue = sum(1 for r in dash_rows if r.get("_overdue"))
+        completed = sum(1 for r in dash_rows if r["_status"] == "Completed")
+        behind = sum(1 for r in dash_rows if r["_status"] == "Running Behind")
+        ahead = sum(1 for r in dash_rows if r["_status"] == "Ahead of Schedule")
+        
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Facilities", total)
         m2.metric("Completed", completed)
-        m3.metric("In Progress", total - completed - overdue)
-        m4.metric("Overdue", overdue)
+        m3.metric("Running Behind", behind)
+        m4.metric("Ahead of Schedule", ahead)
 
-        # Render the grid with colored status cells
+        # Status colors for row highlighting
+        STATUS_COLORS = {
+            "Not Started": {"bg": "#f8fafc", "border": "#e2e8f0", "text": "#64748b"},
+            "Running Behind": {"bg": "#fef2f2", "border": "#fca5a5", "text": "#dc2626"},
+            "On Time": {"bg": "#ffffff", "border": "#dbe4f0", "text": "#1e40af"},
+            "Ahead of Schedule": {"bg": "#f0fdf4", "border": "#86efac", "text": "#059669"},
+            "Completed": {"bg": "#f0fdf4", "border": "#86efac", "text": "#059669"},
+        }
+
+        # Table header
+        st.markdown("""
+        <style>
+        .dash-header {
+            display: flex;
+            font-weight: 700;
+            padding: 12px 16px;
+            background: #f1f5f9;
+            border-radius: 8px 8px 0 0;
+            border: 1px solid #e2e8f0;
+            margin-top: 16px;
+        }
+        .dash-header > div { flex: 1; }
+        .dash-row {
+            display: flex;
+            padding: 12px 16px;
+            border-left: 1px solid;
+            border-right: 1px solid;
+            border-bottom: 1px solid;
+        }
+        .dash-row:last-child { border-radius: 0 0 8px 8px; }
+        .dash-row > div { flex: 1; }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        # Header row
+        st.markdown("""
+        <div class="dash-header">
+            <div>Facility</div>
+            <div>Tasks Completed</div>
+            <div>Current Task</div>
+            <div>Status</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Data rows with color coding
         for row in dash_rows:
-            highlight = row.get("_highlight", "")
-            is_overdue = row.get("_overdue", False)
-
-            if is_overdue:
-                bg = "#fef2f2"
-                border_color = "#fca5a5"
-            elif highlight == "early":
-                bg = "#f0fdf4"
-                border_color = "#86efac"
-            elif highlight == "late":
-                bg = "#fef2f2"
-                border_color = "#fca5a5"
-            else:
-                bg = "white"
-                border_color = "#dbe4f0"
-
-            status_text = row["Status"]
-            if highlight == "early":
-                status_text += " (ahead of avg)"
-            elif highlight == "late":
-                status_text += " (behind avg)"
-
-            cols = st.columns([2, 1.5, 1.5, 1.2])
-            with cols[0]:
-                st.markdown(
-                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
-                    f"padding:8px 12px;font-weight:600;'>{row['Facility']}"
-                    f"<span style='color:#64748b;font-weight:400;font-size:0.85em;'> ({row['Day']})</span></div>",
-                    unsafe_allow_html=True,
-                )
-            with cols[1]:
-                st.markdown(
-                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
-                    f"padding:8px 12px;'>{row['Progress']}</div>",
-                    unsafe_allow_html=True,
-                )
-            with cols[2]:
-                st.markdown(
-                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
-                    f"padding:8px 12px;'>{status_text}</div>",
-                    unsafe_allow_html=True,
-                )
-            with cols[3]:
-                st.markdown(
-                    f"<div style='background:{bg};border:1px solid {border_color};border-radius:8px;"
-                    f"padding:8px 12px;'>{row['High Dollar']}</div>",
-                    unsafe_allow_html=True,
-                )
+            colors = STATUS_COLORS.get(row["_status"], STATUS_COLORS["On Time"])
+            st.markdown(f"""
+            <div class="dash-row" style="background:{colors['bg']};border-color:{colors['border']};">
+                <div style="font-weight:600;">{row['Facility']}</div>
+                <div>{row['Tasks Completed']}</div>
+                <div>{row['Current Task']}</div>
+                <div style="color:{colors['text']};font-weight:600;">{row['Status']}</div>
+            </div>
+            """, unsafe_allow_html=True)
     else:
         st.info("No facilities scheduled for today.")
 
