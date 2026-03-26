@@ -269,13 +269,15 @@ def load_bag_count_state() -> dict:
                 }
             }
         },
-        "unlocked_days": []
+        "unlocked_days": [],
+        "completed_days": []
     }
     """
     default = {
         "batches": {},
         "counts": {},
         "unlocked_days": [],
+        "completed_days": [],
     }
     if _USE_SUPABASE:
         try:

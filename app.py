@@ -1331,6 +1331,8 @@ if current_page == "Cycle Team":
             st.session_state.bag_counts = bag_state.get("counts", {})
         if "bag_unlocked_days" not in st.session_state:
             st.session_state.bag_unlocked_days = bag_state.get("unlocked_days", [])
+        if "bag_completed_days" not in st.session_state:
+            st.session_state.bag_completed_days = bag_state.get("completed_days", [])
         
         st.markdown("### Cycle Bag Count")
         st.caption("Track bag counts and census per batch for each facility.")
@@ -1339,17 +1341,19 @@ if current_page == "Cycle Team":
         week_dates = get_week_dates()
         today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
         
-        # Determine visible days (today + 2 days prior if incomplete + unlocked future)
+        # Determine visible days (today + 2 days prior unless marked complete + unlocked future)
         def get_visible_days_bag():
             if today_abbr not in DAY_ABBR_ORDER:
                 return DAY_ABBR_ORDER
             visible = []
+            completed = st.session_state.bag_completed_days
             for i, d in enumerate(DAY_ABBR_ORDER):
                 if i == today_idx:
                     visible.append(d)
                 elif i >= today_idx - 2 and i < today_idx:
-                    # Show up to 2 days prior
-                    visible.append(d)
+                    # Show up to 2 days prior UNLESS marked complete
+                    if d not in completed:
+                        visible.append(d)
             return visible
         
         visible_days = get_visible_days_bag()
@@ -1361,9 +1365,43 @@ if current_page == "Cycle Team":
         future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
         next_unlockable = next((fd for fd in future_days if fd not in st.session_state.bag_unlocked_days), None)
         
-        # Lock/Unlock buttons
+        # Day Complete / Lock/Unlock buttons
+        st.markdown("#### Day Controls")
         btn_cols = st.columns(5)
         col_idx = 0
+        
+        # Show "Day Complete" buttons for past days that are visible
+        past_visible = [d for d in visible_days if DAY_ABBR_ORDER.index(d) < today_idx]
+        for day in past_visible:
+            if col_idx < 5:
+                with btn_cols[col_idx]:
+                    if st.button(f"✅ {day} ({week_dates.get(day, '')}) Complete", key=f"bag_complete_{day}", use_container_width=True):
+                        if day not in st.session_state.bag_completed_days:
+                            st.session_state.bag_completed_days.append(day)
+                        supa.save_bag_count_state({
+                            "batches": st.session_state.bag_batches,
+                            "counts": st.session_state.bag_counts,
+                            "unlocked_days": st.session_state.bag_unlocked_days,
+                            "completed_days": st.session_state.bag_completed_days,
+                        })
+                        st.rerun()
+                col_idx += 1
+        
+        # Show unlock button for future days
+        if next_unlockable and col_idx < 5:
+            with btn_cols[col_idx]:
+                if st.button(f"🔓 Unlock {next_unlockable} ({week_dates.get(next_unlockable, '')})", key=f"bag_unlock_{next_unlockable}", use_container_width=True):
+                    st.session_state.bag_unlocked_days.append(next_unlockable)
+                    supa.save_bag_count_state({
+                        "batches": st.session_state.bag_batches,
+                        "counts": st.session_state.bag_counts,
+                        "unlocked_days": st.session_state.bag_unlocked_days,
+                        "completed_days": st.session_state.bag_completed_days,
+                    })
+                    st.rerun()
+                col_idx += 1
+        
+        # Show lock buttons for unlocked future days
         for unlocked in st.session_state.bag_unlocked_days:
             if col_idx < 5:
                 with btn_cols[col_idx]:
@@ -1374,19 +1412,10 @@ if current_page == "Cycle Team":
                             "batches": st.session_state.bag_batches,
                             "counts": st.session_state.bag_counts,
                             "unlocked_days": st.session_state.bag_unlocked_days,
+                            "completed_days": st.session_state.bag_completed_days,
                         })
                         st.rerun()
                 col_idx += 1
-        if next_unlockable and col_idx < 5:
-            with btn_cols[col_idx]:
-                if st.button(f"🔓 Unlock {next_unlockable}", key=f"bag_unlock_{next_unlockable}", use_container_width=True):
-                    st.session_state.bag_unlocked_days.append(next_unlockable)
-                    supa.save_bag_count_state({
-                        "batches": st.session_state.bag_batches,
-                        "counts": st.session_state.bag_counts,
-                        "unlocked_days": st.session_state.bag_unlocked_days,
-                    })
-                    st.rerun()
         
         # Manual save button (in case auto-save failed)
         save_col1, save_col2 = st.columns([1, 3])
@@ -1396,6 +1425,7 @@ if current_page == "Cycle Team":
                     "batches": st.session_state.bag_batches,
                     "counts": st.session_state.bag_counts,
                     "unlocked_days": st.session_state.bag_unlocked_days,
+                    "completed_days": st.session_state.bag_completed_days,
                 })
                 st.success("✅ Saved to database!")
         with save_col2:
@@ -1433,6 +1463,7 @@ if current_page == "Cycle Team":
                                     "batches": st.session_state.bag_batches,
                                     "counts": st.session_state.bag_counts,
                                     "unlocked_days": st.session_state.bag_unlocked_days,
+                                    "completed_days": st.session_state.bag_completed_days,
                                 })
                                 st.rerun()
                 else:
@@ -1453,6 +1484,7 @@ if current_page == "Cycle Team":
                                 "batches": st.session_state.bag_batches,
                                 "counts": st.session_state.bag_counts,
                                 "unlocked_days": st.session_state.bag_unlocked_days,
+                                "completed_days": st.session_state.bag_completed_days,
                             })
                             st.rerun()
         
@@ -1535,6 +1567,7 @@ if current_page == "Cycle Team":
                                                 "batches": st.session_state.bag_batches,
                                                 "counts": st.session_state.bag_counts,
                                                 "unlocked_days": st.session_state.bag_unlocked_days,
+                                                "completed_days": st.session_state.bag_completed_days,
                                             })
                                     with col3:
                                         new_census = st.number_input(
@@ -1550,6 +1583,7 @@ if current_page == "Cycle Team":
                                                 "batches": st.session_state.bag_batches,
                                                 "counts": st.session_state.bag_counts,
                                                 "unlocked_days": st.session_state.bag_unlocked_days,
+                                                "completed_days": st.session_state.bag_completed_days,
                                             })
                                 
                                 # Show facility totals
