@@ -686,17 +686,59 @@ ensure_cycle_log_file()
 
 st.set_page_config(page_title="Ozark LTC Rx Ops Center", page_icon="💊", layout="wide")
 
-# --- Authentication ---
+# --- Authentication (with Supabase persistence for 30-day sessions) ---
 CONFIG_PATH = APP_DIR / "config.yaml"
-if CONFIG_PATH.exists():
-    with open(CONFIG_PATH) as f:
-        config = yaml.safe_load(f)
+
+
+def load_merged_config() -> dict:
+    """Load config from Supabase (if available), merged with local config.yaml.
     
+    Supabase config takes precedence for credentials/permissions, ensuring
+    user accounts persist across Streamlit Cloud restarts.
+    """
+    # Start with local config.yaml as base
+    local_config = {}
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH) as f:
+            local_config = yaml.safe_load(f) or {}
+    
+    # Try to load from Supabase
+    db_config = supa.load_auth_config_db()
+    
+    if db_config:
+        # Supabase config takes precedence for credentials and permissions
+        merged = local_config.copy()
+        if "credentials" in db_config:
+            merged["credentials"] = db_config["credentials"]
+        if "permissions" in db_config:
+            merged["permissions"] = db_config["permissions"]
+        return merged
+    
+    return local_config
+
+
+def save_config(config: dict) -> None:
+    """Save config to both Supabase (for persistence) and local file.
+    
+    This ensures user accounts survive Streamlit Cloud restarts.
+    """
+    # Save to Supabase first (this persists across restarts)
+    supa.save_auth_config_db(config)
+    
+    # Also save locally (for immediate use and backup)
+    with open(CONFIG_PATH, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
+
+
+# Load merged config (Supabase + local)
+config = load_merged_config()
+
+if config and config.get('credentials') and config.get('cookie'):
     authenticator = stauth.Authenticate(
         config['credentials'],
         config['cookie']['name'],
         config['cookie']['key'],
-        config['cookie']['expiry_days'],
+        config['cookie']['expiry_days'],  # 30 days as configured
     )
     
     authenticator.login(location='main')
@@ -709,6 +751,9 @@ if CONFIG_PATH.exists():
         st.stop()
     
     # User is authenticated - show logout in sidebar later
+else:
+    st.error("No authentication config found. Please check config.yaml and Supabase.")
+    st.stop()
 # --- End Authentication ---
 
 # --- Auto-refresh for real-time sync (every 30 seconds) ---
@@ -1741,8 +1786,7 @@ if current_page == "User Management" and is_admin_user():
                         "password": hashed,
                         "role": new_role
                     }
-                    with open(CONFIG_PATH, "w") as f:
-                        yaml.dump(user_config, f, default_flow_style=False)
+                    save_config(user_config)
                     st.success(f"Added user '{new_username}'")
                     st.rerun()
             else:
@@ -1765,8 +1809,7 @@ if current_page == "User Management" and is_admin_user():
                             import bcrypt
                             hashed = bcrypt.hashpw(new_pwd.encode(), bcrypt.gensalt()).decode()
                             user_config["credentials"]["usernames"][username]["password"] = hashed
-                            with open(CONFIG_PATH, "w") as f:
-                                yaml.dump(user_config, f, default_flow_style=False)
+                            save_config(user_config)
                             st.success("Password updated")
                             st.rerun()
                         else:
@@ -1781,8 +1824,7 @@ if current_page == "User Management" and is_admin_user():
                 if new_role_sel != current_role:
                     if st.button("Update Role", key=f"update_role_{username}"):
                         user_config["credentials"]["usernames"][username]["role"] = new_role_sel
-                        with open(CONFIG_PATH, "w") as f:
-                            yaml.dump(user_config, f, default_flow_style=False)
+                        save_config(user_config)
                         st.success(f"Role updated to {new_role_sel}")
                         st.rerun()
             
@@ -1791,8 +1833,7 @@ if current_page == "User Management" and is_admin_user():
                 if username != st.session_state.get("username"):
                     if st.button("🗑️ Delete", key=f"del_{username}", type="secondary"):
                         del user_config["credentials"]["usernames"][username]
-                        with open(CONFIG_PATH, "w") as f:
-                            yaml.dump(user_config, f, default_flow_style=False)
+                        save_config(user_config)
                         st.success(f"Deleted user '{username}'")
                         st.rerun()
                 else:
@@ -1834,8 +1875,7 @@ if current_page == "User Management" and is_admin_user():
                 if "roles" not in user_config["permissions"]:
                     user_config["permissions"]["roles"] = {}
                 user_config["permissions"]["roles"]["user"] = new_user_perms
-                with open(CONFIG_PATH, "w") as f:
-                    yaml.dump(user_config, f, default_flow_style=False)
+                save_config(user_config)
                 st.success("User role permissions updated!")
                 st.rerun()
     
@@ -1874,16 +1914,14 @@ if current_page == "User Management" and is_admin_user():
                     if "users" not in user_config["permissions"]:
                         user_config["permissions"]["users"] = {}
                     user_config["permissions"]["users"][username] = new_perms
-                    with open(CONFIG_PATH, "w") as f:
-                        yaml.dump(user_config, f, default_flow_style=False)
+                    save_config(user_config)
                     st.success(f"Permissions for {username} updated!")
                     st.rerun()
             else:
                 if has_override:
                     if st.button(f"Remove override (use role defaults)", key=f"remove_override_{username}"):
                         del user_config["permissions"]["users"][username]
-                        with open(CONFIG_PATH, "w") as f:
-                            yaml.dump(user_config, f, default_flow_style=False)
+                        save_config(user_config)
                         st.success(f"Override removed for {username}")
                         st.rerun()
                 else:

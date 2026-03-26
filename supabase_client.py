@@ -212,6 +212,40 @@ def save_users_config_db(config: dict) -> None:
             pass
 
 
+# ── Full Auth Config (credentials + permissions + cookie settings) ─────────
+
+def load_auth_config_db() -> dict | None:
+    """Load full auth config from Supabase. Returns None if not available.
+    
+    This includes credentials, permissions, and cookie settings - everything
+    needed for streamlit_authenticator to work.
+    """
+    if not _USE_SUPABASE:
+        return None
+    try:
+        resp = _supabase_client.table("users_config").select("value").eq("key", "auth_config").execute()
+        if resp.data:
+            return resp.data[0]["value"]
+    except Exception:
+        pass
+    return None
+
+
+def save_auth_config_db(config: dict) -> None:
+    """Save full auth config to Supabase for persistence across restarts.
+    
+    This is the key function that ensures user accounts persist on Streamlit Cloud.
+    """
+    if _USE_SUPABASE:
+        try:
+            _supabase_client.table("users_config").upsert(
+                {"key": "auth_config", "value": config},
+                on_conflict="key",
+            ).execute()
+        except Exception as e:
+            print(f"Warning: Failed to save auth config to Supabase: {e}")
+
+
 # ── Bag Count Tracking ──────────────────────────────────────────────────────
 
 BAG_COUNT_FILE = DATA_DIR / "bag_count_state.json"
