@@ -18,6 +18,7 @@ import streamlit as st
 import yaml
 import streamlit_authenticator as stauth
 from streamlit_autorefresh import st_autorefresh
+from dateutil.relativedelta import relativedelta
 
 import supabase_client as supa
 
@@ -868,7 +869,9 @@ with st.sidebar:
     st.caption("Concrete pharmacy operations prototype")
     selected_facility = st.selectbox("Facility filter", facility_names)
     st.divider()
-    st.caption(f"Facilities: {len(facilities)} · ADT: {len(adt)}")
+    # Load master facility count for sidebar
+    _sidebar_master_facs = supa.load_master_facilities()
+    st.caption(f"Facilities: {len(_sidebar_master_facs)} · ADT: {len(adt)}")
     st.caption(f"Routes: {len(delivery)} · E-Kits: {len(emergency_kits)}")
 
 if selected_facility != "All facilities":
@@ -1825,60 +1828,133 @@ if current_page == "Facility Management":
 # --- PAGE: Pharmacy Management ---
 if current_page == "Pharmacy Management":
     st.markdown("### 🏥 Pharmacy Management")
-    st.caption("Facility directory and reference information.")
+    st.caption("Master facility list with contract tracking.")
     
-    # Load facilities from config
-    fac_config = load_facilities_config()
+    # Load master facilities
+    if "master_facilities" not in st.session_state:
+        st.session_state.master_facilities = supa.load_master_facilities()
     
-    # Build facility directory
-    all_facilities = []
-    for day, fac_list in fac_config.items():
-        for fac in fac_list:
-            fac_name = fac["name"] if isinstance(fac, dict) else fac
-            freq = fac.get("frequency", "Weekly") if isinstance(fac, dict) else "Weekly"
-            all_facilities.append({
-                "Facility": fac_name,
-                "Scheduled Day": day,
-                "Frequency": freq,
-            })
+    master_facs = st.session_state.master_facilities
     
-    # Remove duplicates (facility might be on multiple days)
-    seen_facs = set()
-    unique_facilities = []
-    for f in all_facilities:
-        if f["Facility"] not in seen_facs:
-            unique_facilities.append(f)
-            seen_facs.add(f["Facility"])
+    def calculate_next_renewal(start_date_str: str, original_term: int, renewal_term: int) -> tuple[str, str]:
+        """Calculate next renewal date and whether it's original or renewal term.
+        
+        Returns: (next_renewal_date_str, term_type)
+        """
+        try:
+            start = datetime.strptime(start_date_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return ("Invalid date", "Unknown")
+        
+        today = datetime.now()
+        
+        # First check if we're still in original term
+        original_end = start + relativedelta(years=original_term)
+        if today < original_end:
+            return (original_end.strftime("%b %d, %Y"), f"Original ({original_term}yr)")
+        
+        # We're past original term, calculate renewal cycles
+        current_end = original_end
+        while current_end <= today:
+            current_end += relativedelta(years=renewal_term)
+        
+        return (current_end.strftime("%b %d, %Y"), f"Renewal ({renewal_term}yr)")
     
-    st.markdown("#### 📋 Facility Directory")
-    st.caption(f"{len(unique_facilities)} facilities in system")
-    
-    if unique_facilities:
-        fac_df = pd.DataFrame(unique_facilities)
-        st.dataframe(fac_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("No facilities configured yet.")
+    # Add new facility form
+    st.markdown("#### ➕ Add New Facility")
+    with st.form("add_facility_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            new_name = st.text_input("Facility Name", placeholder="e.g., Sunrise Manor")
+            new_start = st.date_input("Contract Start Date")
+        with col2:
+            new_original = st.number_input("Original Term (years)", min_value=1, max_value=10, value=3)
+            new_renewal = st.number_input("Renewal Term (years)", min_value=1, max_value=10, value=1)
+        
+        if st.form_submit_button("➕ Add Facility", use_container_width=True):
+            if new_name.strip():
+                # Check for duplicates
+                existing_names = [f["name"].lower() for f in master_facs]
+                if new_name.strip().lower() in existing_names:
+                    st.error(f"Facility '{new_name}' already exists")
+                else:
+                    master_facs.append({
+                        "name": new_name.strip(),
+                        "start_date": new_start.strftime("%Y-%m-%d"),
+                        "original_term": new_original,
+                        "renewal_term": new_renewal,
+                    })
+                    supa.save_master_facilities(master_facs)
+                    st.success(f"Added '{new_name}'")
+                    st.rerun()
+            else:
+                st.warning("Please enter a facility name")
     
     st.divider()
     
-    # Schedule overview
-    st.markdown("#### 📅 Weekly Schedule Overview")
-    for day in DAY_ABBR_ORDER:
-        day_facs = fac_config.get(day, [])
-        active_facs = [
-            (f["name"] if isinstance(f, dict) else f)
-            for f in day_facs
-            if facility_active_this_week(
-                f.get("frequency", "Weekly") if isinstance(f, dict) else "Weekly",
-                f.get("start_date") if isinstance(f, dict) else None
+    # Display facility list
+    st.markdown(f"#### 📋 Facility Directory ({len(master_facs)} facilities)")
+    
+    if master_facs:
+        # Build display data
+        display_rows = []
+        for fac in master_facs:
+            next_renewal, term_type = calculate_next_renewal(
+                fac.get("start_date", ""),
+                fac.get("original_term", 3),
+                fac.get("renewal_term", 1)
             )
-        ]
-        with st.expander(f"**{day}** — {len(active_facs)} facilities this week"):
-            if active_facs:
-                for fac in active_facs:
-                    st.write(f"• {fac}")
-            else:
-                st.caption("No facilities scheduled")
+            display_rows.append({
+                "Facility": fac["name"],
+                "Start Date": fac.get("start_date", "N/A"),
+                "Original Term": f"{fac.get('original_term', 'N/A')} yr",
+                "Renewal Term": f"{fac.get('renewal_term', 'N/A')} yr",
+                "Next Renewal": next_renewal,
+                "Term Type": term_type,
+            })
+        
+        st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+        
+        # Edit/Delete facilities
+        st.markdown("#### ✏️ Edit or Remove Facilities")
+        for i, fac in enumerate(master_facs):
+            with st.expander(f"**{fac['name']}**"):
+                edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1])
+                with edit_col1:
+                    edit_start = st.date_input(
+                        "Start Date", 
+                        value=datetime.strptime(fac.get("start_date", "2020-01-01"), "%Y-%m-%d"),
+                        key=f"edit_start_{i}"
+                    )
+                    edit_original = st.number_input(
+                        "Original Term (yr)", 
+                        min_value=1, max_value=10, 
+                        value=fac.get("original_term", 3),
+                        key=f"edit_orig_{i}"
+                    )
+                with edit_col2:
+                    edit_renewal = st.number_input(
+                        "Renewal Term (yr)", 
+                        min_value=1, max_value=10, 
+                        value=fac.get("renewal_term", 1),
+                        key=f"edit_renew_{i}"
+                    )
+                    if st.button("💾 Save Changes", key=f"save_{i}", use_container_width=True):
+                        master_facs[i]["start_date"] = edit_start.strftime("%Y-%m-%d")
+                        master_facs[i]["original_term"] = edit_original
+                        master_facs[i]["renewal_term"] = edit_renewal
+                        supa.save_master_facilities(master_facs)
+                        st.success("Saved!")
+                        st.rerun()
+                with edit_col3:
+                    st.write("")  # Spacer
+                    st.write("")
+                    if st.button("🗑️ Delete", key=f"del_{i}", type="secondary"):
+                        del master_facs[i]
+                        supa.save_master_facilities(master_facs)
+                        st.rerun()
+    else:
+        st.info("No facilities added yet. Use the form above to add your first facility.")
 
 # --- PAGE: Data Explorer ---
 if current_page == "Data Explorer":

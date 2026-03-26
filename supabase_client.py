@@ -246,6 +246,55 @@ def save_auth_config_db(config: dict) -> None:
             print(f"Warning: Failed to save auth config to Supabase: {e}")
 
 
+# ── Master Facility List (Pharmacy Management) ──────────────────────────────
+
+def load_master_facilities() -> list[dict]:
+    """Load master facility list from Supabase.
+    
+    Each facility has:
+    - name: str
+    - start_date: str (YYYY-MM-DD)
+    - original_term: int (years)
+    - renewal_term: int (years)
+    """
+    default = []
+    if _USE_SUPABASE:
+        try:
+            resp = _supabase_client.table("tracking_state").select("value").eq("key", "master_facilities").execute()
+            if resp.data:
+                return resp.data[0]["value"]
+        except Exception:
+            pass
+        return default
+    
+    # Fallback: local JSON
+    master_file = DATA_DIR / "master_facilities.json"
+    if master_file.exists():
+        try:
+            return json.loads(master_file.read_text())
+        except Exception:
+            pass
+    return default
+
+
+def save_master_facilities(facilities: list[dict]) -> None:
+    """Save master facility list to Supabase."""
+    if _USE_SUPABASE:
+        try:
+            _supabase_client.table("tracking_state").upsert(
+                {"key": "master_facilities", "value": facilities},
+                on_conflict="key",
+            ).execute()
+            return
+        except Exception:
+            pass
+    
+    # Fallback: local JSON
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    master_file = DATA_DIR / "master_facilities.json"
+    master_file.write_text(json.dumps(facilities, indent=2))
+
+
 # ── Bag Count Tracking ──────────────────────────────────────────────────────
 
 BAG_COUNT_FILE = DATA_DIR / "bag_count_state.json"
