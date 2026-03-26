@@ -1341,19 +1341,16 @@ if current_page == "Cycle Team":
         week_dates = get_week_dates()
         today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
         
-        # Determine visible days (today + all prior weekdays unless marked complete + unlocked future)
+        # Determine visible days (entire week Mon-Fri unless marked complete + unlocked future)
         def get_visible_days_bag():
             if today_abbr not in DAY_ABBR_ORDER:
                 return DAY_ABBR_ORDER
             visible = []
             completed = st.session_state.bag_completed_days
             for i, d in enumerate(DAY_ABBR_ORDER):
-                if i == today_idx:
+                # Show all days Mon-Fri unless marked complete
+                if d not in completed:
                     visible.append(d)
-                elif i < today_idx:
-                    # Show all prior days in the week UNLESS marked complete
-                    if d not in completed:
-                        visible.append(d)
             return visible
         
         visible_days = get_visible_days_bag()

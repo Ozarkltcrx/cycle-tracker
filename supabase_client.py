@@ -312,3 +312,68 @@ def save_bag_count_state(state: dict) -> None:
     # Fallback: local JSON
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     BAG_COUNT_FILE.write_text(json.dumps(state, indent=2))
+
+
+def export_and_reset_bag_counts() -> str:
+    """Export current week's bag counts (Mon-Fri only) to CSV and reset for new week.
+    
+    Called by Sunday 7pm cron job. Only exports Mon-Fri data, ignores any
+    'next Monday' data that might have been entered early on Friday.
+    
+    Returns: Path to exported CSV file or status message.
+    """
+    import csv
+    from datetime import datetime
+    
+    state = load_bag_count_state()
+    counts = state.get("counts", {})
+    batches = state.get("batches", {})
+    
+    # Only export Mon-Fri (current week)
+    WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    
+    # Get week info for filename
+    today = datetime.now()
+    week_num = today.isocalendar()[1]
+    year = today.year
+    filename = f"bag_counts_{year}_W{week_num:02d}.csv"
+    filepath = APP_DIR / "data" / filename
+    
+    # Build export rows
+    rows = []
+    for day in WEEKDAYS:
+        day_counts = counts.get(day, {})
+        for facility, fac_counts in day_counts.items():
+            fac_batches = batches.get(facility, [])
+            batch_lookup = {b["id"]: b["name"] for b in fac_batches}
+            for batch_id, values in fac_counts.items():
+                batch_name = batch_lookup.get(batch_id, batch_id)
+                rows.append({
+                    "day": day,
+                    "facility": facility,
+                    "batch": batch_name,
+                    "bags": values.get("bags", 0),
+                    "census": values.get("census", 0),
+                })
+    
+    if rows:
+        # Write CSV
+        (APP_DIR / "data").mkdir(parents=True, exist_ok=True)
+        with open(filepath, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["day", "facility", "batch", "bags", "census"])
+            writer.writeheader()
+            writer.writerows(rows)
+    
+    # Reset state for new week - clear counts and completed_days, keep batches
+    new_state = {
+        "batches": batches,  # Keep batch definitions
+        "counts": {},        # Clear all counts
+        "unlocked_days": [], # Reset unlocks
+        "completed_days": [], # Reset completions
+    }
+    save_bag_count_state(new_state)
+    
+    if rows:
+        return f"Exported {len(rows)} rows to {filename} and reset for new week."
+    else:
+        return "No bag count data to export. Reset for new week."
