@@ -314,7 +314,7 @@ def save_bag_count_state(state: dict) -> None:
     BAG_COUNT_FILE.write_text(json.dumps(state, indent=2))
 
 
-def export_and_reset_bag_counts(email_to: str = "cardinalquaker@gmail.com") -> str:
+def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com") -> str:
     """Export current week's bag counts (Mon-Fri only) to CSV, email it, and reset for new week.
     
     Called by Sunday 7pm cron job. Only exports Mon-Fri data, ignores any
