@@ -314,15 +314,19 @@ def save_bag_count_state(state: dict) -> None:
     BAG_COUNT_FILE.write_text(json.dumps(state, indent=2))
 
 
-def export_and_reset_bag_counts() -> str:
-    """Export current week's bag counts (Mon-Fri only) to CSV and reset for new week.
+def export_and_reset_bag_counts(email_to: str = "cardinalquaker@gmail.com") -> str:
+    """Export current week's bag counts (Mon-Fri only) to CSV, email it, and reset for new week.
     
     Called by Sunday 7pm cron job. Only exports Mon-Fri data, ignores any
     'next Monday' data that might have been entered early on Friday.
     
-    Returns: Path to exported CSV file or status message.
+    Args:
+        email_to: Email address to send the report to.
+    
+    Returns: Status message.
     """
     import csv
+    import subprocess
     from datetime import datetime
     
     state = load_bag_count_state()
@@ -356,6 +360,8 @@ def export_and_reset_bag_counts() -> str:
                     "census": values.get("census", 0),
                 })
     
+    result_msg = ""
+    
     if rows:
         # Write CSV
         (APP_DIR / "data").mkdir(parents=True, exist_ok=True)
@@ -363,6 +369,47 @@ def export_and_reset_bag_counts() -> str:
             writer = csv.DictWriter(f, fieldnames=["day", "facility", "batch", "bags", "census"])
             writer.writeheader()
             writer.writerows(rows)
+        
+        # Calculate totals for email summary
+        total_bags = sum(r["bags"] or 0 for r in rows)
+        total_census = sum(r["census"] or 0 for r in rows)
+        facilities = len(set(r["facility"] for r in rows))
+        
+        # Email the report
+        subject = f"Weekly Bag Count Report - Week {week_num}, {year}"
+        body = f"""Weekly Bag Count Report
+
+Week {week_num}, {year}
+
+Summary:
+- Total Bags: {total_bags}
+- Total Census: {total_census}
+- Facilities: {facilities}
+- Data Points: {len(rows)}
+
+The detailed CSV report is attached.
+
+---
+Automated report from Ozark LTC Rx Cycle Tracker
+"""
+        
+        try:
+            # Send email with attachment using gog
+            cmd = [
+                "gog", "gmail", "send",
+                "--to", email_to,
+                "--subject", subject,
+                "--body", body,
+                "--attach", str(filepath)
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            result_msg = f"Exported {len(rows)} rows to {filename} and emailed to {email_to}."
+        except subprocess.CalledProcessError as e:
+            result_msg = f"Exported {len(rows)} rows to {filename} but email failed: {e}"
+        except Exception as e:
+            result_msg = f"Exported {len(rows)} rows to {filename} but email failed: {e}"
+    else:
+        result_msg = "No bag count data to export."
     
     # Reset state for new week - clear counts and completed_days, keep batches
     new_state = {
@@ -373,7 +420,4 @@ def export_and_reset_bag_counts() -> str:
     }
     save_bag_count_state(new_state)
     
-    if rows:
-        return f"Exported {len(rows)} rows to {filename} and reset for new week."
-    else:
-        return "No bag count data to export. Reset for new week."
+    return result_msg + " Reset for new week."
