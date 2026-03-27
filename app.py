@@ -2032,6 +2032,52 @@ if current_page == "QA":
             st.caption(f"{len(expiring_licenses)} license(s) expiring within 90 days")
         else:
             st.success("✅ No BNDD licenses expiring within 90 days")
+        
+        st.divider()
+        
+        # Cubex Re-Stocks due within 90 days
+        st.markdown("#### 📦 Cubex Re-Stocks Due Soon")
+        
+        expiring_cubex = []
+        for entry in cubex_restock:
+            try:
+                next_due_dt = datetime.strptime(entry["next_restock_due"], "%Y-%m-%d")
+                days_until = (next_due_dt - today).days
+                if days_until <= 90:
+                    expiring_cubex.append({
+                        "Facility": entry["facility"],
+                        "Serial Number": entry.get("serial_number", "") or "—",
+                        "Next Re-Stock Due": next_due_dt.strftime("%b %d, %Y"),
+                        "Days Until Due": days_until,
+                    })
+            except:
+                pass
+        
+        if expiring_cubex:
+            # Sort by soonest due first
+            expiring_cubex.sort(key=lambda x: x["Days Until Due"])
+            
+            # Create DataFrame
+            cubex_df = pd.DataFrame(expiring_cubex)
+            
+            # Style function for row colors
+            def color_cubex_dash_rows(row):
+                days = row["Days Until Due"]
+                if days <= 30:
+                    return ["background-color: #fecaca"] * len(row)  # Red
+                elif days <= 60:
+                    return ["background-color: #fef08a"] * len(row)  # Yellow
+                else:
+                    return ["background-color: #bbf7d0"] * len(row)  # Green
+            
+            # Apply styling
+            styled_cubex_df = cubex_df.style.apply(color_cubex_dash_rows, axis=1)
+            
+            # Display
+            st.dataframe(styled_cubex_df, use_container_width=True, hide_index=True)
+            st.caption(f"{len(expiring_cubex)} Cubex machine(s) due for re-stock within 90 days")
+        else:
+            st.success("✅ No Cubex re-stocks due within 90 days")
     
     # ============ TAB 2: BNDD License ============
     with qa_tab2:
@@ -2262,7 +2308,7 @@ if current_page == "QA":
                     st.warning("No facilities found. Add facilities in Pharmacy Management first.")
                     st.form_submit_button("➕ Add Entry", disabled=True)
         
-        # Display Cubex entries table
+        # Display Cubex entries table with inline edit
         if cubex_restock:
             st.markdown(f"**{len(cubex_restock)} Cubex machines tracked**")
             
@@ -2271,9 +2317,11 @@ if current_page == "QA":
             
             today = datetime.now()
             
-            # Build display data
-            display_rows = []
-            for entry in sorted_cubex:
+            # Table rows with inline edit buttons
+            for idx, entry in enumerate(sorted_cubex):
+                # Find actual index in cubex_restock
+                actual_idx = next(j for j, e in enumerate(cubex_restock) if e["facility"] == entry["facility"] and e.get("serial_number") == entry.get("serial_number"))
+                
                 try:
                     restock_dt = datetime.strptime(entry["restock_date"], "%Y-%m-%d")
                     next_due_dt = datetime.strptime(entry["next_restock_due"], "%Y-%m-%d")
@@ -2283,67 +2331,65 @@ if current_page == "QA":
                     next_due_dt = None
                     days_until = None
                 
-                display_rows.append({
-                    "Facility": entry["facility"],
-                    "Serial Number": entry.get("serial_number", "N/A"),
-                    "Re-Stock Date": restock_dt.strftime("%b %d, %Y") if restock_dt else "N/A",
-                    "Next Re-Stock Due": next_due_dt.strftime("%b %d, %Y") if next_due_dt else "N/A",
-                    "Days Until Due": days_until if days_until is not None else "N/A",
-                })
-            
-            # Create DataFrame with row coloring
-            df = pd.DataFrame(display_rows)
-            
-            def color_cubex_rows(row):
-                days = row["Days Until Due"]
-                if days == "N/A":
-                    return [""] * len(row)
-                if days <= 30:
-                    return ["background-color: #fecaca"] * len(row)  # Red
-                elif days <= 60:
-                    return ["background-color: #fef08a"] * len(row)  # Yellow
-                elif days <= 90:
-                    return ["background-color: #bbf7d0"] * len(row)  # Green
-                return [""] * len(row)
-            
-            styled_df = df.style.apply(color_cubex_rows, axis=1)
-            st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            
-            # Edit/Delete section
-            with st.expander("✏️ Edit or Remove Entries", expanded=False):
-                for i, entry in enumerate(cubex_restock):
-                    with st.expander(f"**{entry['facility']}** — {entry.get('serial_number', 'N/A')}"):
-                        edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1])
-                        with edit_col1:
-                            edit_serial = st.text_input(
-                                "Serial Number",
-                                value=entry.get("serial_number", ""),
-                                key=f"edit_cubex_serial_{i}"
-                            )
-                        with edit_col2:
+                # Determine row color
+                if days_until is not None and days_until <= 30:
+                    row_color = "#fecaca"  # Red
+                elif days_until is not None and days_until <= 60:
+                    row_color = "#fef08a"  # Yellow
+                elif days_until is not None and days_until <= 90:
+                    row_color = "#bbf7d0"  # Green
+                else:
+                    row_color = "#ffffff"
+                
+                # Display row
+                col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1.5, 1.5, 1, 1])
+                with col1:
+                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'><strong>{entry['facility']}</strong></div>", unsafe_allow_html=True)
+                with col2:
+                    serial_display = entry.get("serial_number", "") or "—"
+                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{serial_display}</div>", unsafe_allow_html=True)
+                with col3:
+                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{restock_dt.strftime('%b %d, %Y') if restock_dt else 'N/A'}</div>", unsafe_allow_html=True)
+                with col4:
+                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{next_due_dt.strftime('%b %d, %Y') if next_due_dt else 'N/A'}</div>", unsafe_allow_html=True)
+                with col5:
+                    days_display = f"{days_until} days" if days_until is not None else "N/A"
+                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{days_display}</div>", unsafe_allow_html=True)
+                with col6:
+                    if st.button("✏️", key=f"edit_cubex_btn_{idx}", help="Edit"):
+                        st.session_state[f"editing_cubex_{idx}"] = True
+                        st.rerun()
+                
+                # Inline edit form (appears when Edit is clicked)
+                if st.session_state.get(f"editing_cubex_{idx}", False):
+                    with st.form(f"edit_cubex_form_{idx}"):
+                        ecol1, ecol2, ecol3, ecol4 = st.columns([2, 2, 1, 1])
+                        with ecol1:
+                            edit_serial = st.text_input("Serial Number", value=entry.get("serial_number", ""), key=f"edit_serial_{idx}")
+                        with ecol2:
                             try:
                                 cur_restock = datetime.strptime(entry.get("restock_date", "2025-01-01"), "%Y-%m-%d").date()
                             except:
                                 cur_restock = datetime.now().date()
-                            edit_restock = st.date_input("Re-Stock Date", value=cur_restock, key=f"edit_cubex_date_{i}")
-                        with edit_col3:
-                            st.write("")
-                            if st.button("💾 Save", key=f"save_cubex_{i}", use_container_width=True):
-                                # Recalculate next restock (11 months)
-                                restock_dt = datetime.combine(edit_restock, datetime.min.time())
-                                next_restock = restock_dt + relativedelta(months=11)
+                            edit_restock = st.date_input("Re-Stock Date", value=cur_restock, key=f"edit_restock_{idx}")
+                        with ecol3:
+                            if st.form_submit_button("💾 Save", use_container_width=True):
+                                restock_dt_new = datetime.combine(edit_restock, datetime.min.time())
+                                next_restock = restock_dt_new + relativedelta(months=11)
                                 
-                                cubex_restock[i]["serial_number"] = edit_serial.strip()
-                                cubex_restock[i]["restock_date"] = edit_restock.strftime("%Y-%m-%d")
-                                cubex_restock[i]["next_restock_due"] = next_restock.strftime("%Y-%m-%d")
+                                cubex_restock[actual_idx]["serial_number"] = edit_serial.strip()
+                                cubex_restock[actual_idx]["restock_date"] = edit_restock.strftime("%Y-%m-%d")
+                                cubex_restock[actual_idx]["next_restock_due"] = next_restock.strftime("%Y-%m-%d")
                                 supa.save_cubex_restock(cubex_restock)
                                 st.session_state.cubex_restock = cubex_restock
-                                st.success("Saved!")
+                                st.session_state[f"editing_cubex_{idx}"] = False
                                 st.rerun()
-                            if st.button("🗑️ Delete", key=f"del_cubex_{i}", type="secondary", use_container_width=True):
-                                del cubex_restock[i]
+                        with ecol4:
+                            if st.form_submit_button("🗑️ Delete", use_container_width=True):
+                                del cubex_restock[actual_idx]
                                 supa.save_cubex_restock(cubex_restock)
                                 st.session_state.cubex_restock = cubex_restock
+                                st.session_state[f"editing_cubex_{idx}"] = False
                                 st.rerun()
         else:
             st.info("No Cubex machines tracked yet. Add your first entry above.")
