@@ -1994,81 +1994,36 @@ if current_page == "QA":
                 days_until = (exp_date - today).days
                 if days_until <= 90:
                     expiring_licenses.append({
-                        "facility": lic["facility"],
-                        "license_number": lic.get("license_number", "N/A"),
-                        "expiration_date": lic["expiration_date"],
-                        "exp_display": exp_date.strftime("%b %d, %Y"),
-                        "days_until": days_until,
+                        "Facility": lic["facility"],
+                        "License #": lic.get("license_number", "N/A"),
+                        "Expiration Date": exp_date.strftime("%b %d, %Y"),
+                        "Days Until Expiration": days_until,
                     })
             except:
                 pass
         
         if expiring_licenses:
             # Sort by soonest expiration first
-            expiring_licenses.sort(key=lambda x: x["days_until"])
+            expiring_licenses.sort(key=lambda x: x["Days Until Expiration"])
             
-            # Custom CSS for colored rows
-            st.markdown("""
-            <style>
-            .qa-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-            .qa-table th {
-                background: #f1f5f9;
-                padding: 12px 16px;
-                text-align: left;
-                font-weight: 700;
-                border: 1px solid #e2e8f0;
-            }
-            .qa-table td {
-                padding: 12px 16px;
-                border: 1px solid #e2e8f0;
-            }
-            .qa-row-red { background: #fecaca; }
-            .qa-row-yellow { background: #fef08a; }
-            .qa-row-green { background: #bbf7d0; }
-            </style>
-            """, unsafe_allow_html=True)
+            # Create DataFrame
+            df = pd.DataFrame(expiring_licenses)
             
-            # Build table HTML
-            table_html = """
-            <table class="qa-table">
-                <thead>
-                    <tr>
-                        <th>Facility</th>
-                        <th>License #</th>
-                        <th>Expiration Date</th>
-                        <th>Days Until Expiration</th>
-                    </tr>
-                </thead>
-                <tbody>
-            """
-            
-            for lic in expiring_licenses:
-                days = lic["days_until"]
+            # Style function for row colors
+            def color_rows(row):
+                days = row["Days Until Expiration"]
                 if days <= 30:
-                    row_class = "qa-row-red"
-                    days_display = f"{days} days" if days >= 0 else f"EXPIRED ({abs(days)} days ago)"
+                    return ["background-color: #fecaca"] * len(row)  # Red
                 elif days <= 60:
-                    row_class = "qa-row-yellow"
-                    days_display = f"{days} days"
-                else:  # 61-90
-                    row_class = "qa-row-green"
-                    days_display = f"{days} days"
-                
-                table_html += f"""
-                    <tr class="{row_class}">
-                        <td><strong>{lic['facility']}</strong></td>
-                        <td>{lic['license_number']}</td>
-                        <td>{lic['exp_display']}</td>
-                        <td>{days_display}</td>
-                    </tr>
-                """
+                    return ["background-color: #fef08a"] * len(row)  # Yellow
+                else:
+                    return ["background-color: #bbf7d0"] * len(row)  # Green
             
-            table_html += """
-                </tbody>
-            </table>
-            """
+            # Apply styling
+            styled_df = df.style.apply(color_rows, axis=1)
             
-            st.markdown(table_html, unsafe_allow_html=True)
+            # Display
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
             st.caption(f"{len(expiring_licenses)} license(s) expiring within 90 days")
         else:
             st.success("✅ No BNDD licenses expiring within 90 days")
