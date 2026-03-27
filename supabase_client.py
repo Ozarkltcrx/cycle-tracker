@@ -411,6 +411,55 @@ def save_bndd_licenses(licenses: list[dict]) -> None:
     BNDD_FILE.write_text(json.dumps(licenses, indent=2))
 
 
+# ── Cubex Re-Stock Tracking ─────────────────────────────────────────────────
+
+CUBEX_FILE = DATA_DIR / "cubex_restock.json"
+
+def load_cubex_restock() -> list[dict]:
+    """Load Cubex re-stock data.
+    
+    Each entry has:
+    - facility: str
+    - serial_number: str
+    - restock_date: str (YYYY-MM-DD)
+    - next_restock_due: str (YYYY-MM-DD) - always 11 months after restock_date
+    """
+    default = []
+    if _USE_SUPABASE:
+        try:
+            resp = _supabase_client.table("tracking_state").select("value").eq("key", "cubex_restock").execute()
+            if resp.data:
+                return resp.data[0]["value"]
+        except Exception:
+            pass
+        return default
+    
+    # Fallback: local JSON
+    if CUBEX_FILE.exists():
+        try:
+            return json.loads(CUBEX_FILE.read_text())
+        except Exception:
+            pass
+    return default
+
+
+def save_cubex_restock(entries: list[dict]) -> None:
+    """Save Cubex re-stock data."""
+    if _USE_SUPABASE:
+        try:
+            _supabase_client.table("tracking_state").upsert(
+                {"key": "cubex_restock", "value": entries},
+                on_conflict="key",
+            ).execute()
+            return
+        except Exception:
+            pass
+    
+    # Fallback: local JSON
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CUBEX_FILE.write_text(json.dumps(entries, indent=2))
+
+
 def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com") -> str:
     """Export current week's bag counts (Mon-Fri only) to CSV, email it, and reset for new week.
     
