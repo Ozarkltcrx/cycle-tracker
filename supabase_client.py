@@ -363,6 +363,54 @@ def save_bag_count_state(state: dict) -> None:
     BAG_COUNT_FILE.write_text(json.dumps(state, indent=2))
 
 
+# ── BNDD License Tracking ───────────────────────────────────────────────────
+
+BNDD_FILE = DATA_DIR / "bndd_licenses.json"
+
+def load_bndd_licenses() -> list[dict]:
+    """Load BNDD license data.
+    
+    Each license has:
+    - facility: str
+    - license_number: str
+    - expiration_date: str (YYYY-MM-DD)
+    """
+    default = []
+    if _USE_SUPABASE:
+        try:
+            resp = _supabase_client.table("tracking_state").select("value").eq("key", "bndd_licenses").execute()
+            if resp.data:
+                return resp.data[0]["value"]
+        except Exception:
+            pass
+        return default
+    
+    # Fallback: local JSON
+    if BNDD_FILE.exists():
+        try:
+            return json.loads(BNDD_FILE.read_text())
+        except Exception:
+            pass
+    return default
+
+
+def save_bndd_licenses(licenses: list[dict]) -> None:
+    """Save BNDD license data."""
+    if _USE_SUPABASE:
+        try:
+            _supabase_client.table("tracking_state").upsert(
+                {"key": "bndd_licenses", "value": licenses},
+                on_conflict="key",
+            ).execute()
+            return
+        except Exception:
+            pass
+    
+    # Fallback: local JSON
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    BNDD_FILE.write_text(json.dumps(licenses, indent=2))
+
+
 def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com") -> str:
     """Export current week's bag counts (Mon-Fri only) to CSV, email it, and reset for new week.
     

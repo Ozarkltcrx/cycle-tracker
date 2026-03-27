@@ -782,6 +782,7 @@ ALL_PAGES = [
     "Cycle Team",
     "Facility Management",
     "Pharmacy Management",
+    "QA",
     "Data Explorer",
     "User Management",
 ]
@@ -1955,6 +1956,242 @@ if current_page == "Pharmacy Management":
                                 st.rerun()
         else:
             st.info("No facilities added yet. Click 'Add New Facility' above to add your first facility.")
+
+# --- PAGE: QA ---
+if current_page == "QA":
+    st.title("QA")
+    
+    # Load master facilities for dropdown
+    if "master_facilities" not in st.session_state:
+        st.session_state.master_facilities = supa.load_master_facilities()
+    master_facs = st.session_state.master_facilities
+    facility_names_list = sorted([f["name"] for f in master_facs])
+    
+    # Load BNDD licenses
+    if "bndd_licenses" not in st.session_state:
+        st.session_state.bndd_licenses = supa.load_bndd_licenses()
+    bndd_licenses = st.session_state.bndd_licenses
+    
+    # Tabs: Dashboard and BNDD License
+    qa_tab1, qa_tab2 = st.tabs(["📊 Dashboard", "📋 BNDD License"])
+    
+    # ============ TAB 1: QA Dashboard ============
+    with qa_tab1:
+        st.markdown("### QA Dashboard")
+        st.info("🚧 QA Dashboard — Coming Soon")
+        st.caption("This space will be used for QA metrics and tracking.")
+    
+    # ============ TAB 2: BNDD License ============
+    with qa_tab2:
+        st.markdown("### BNDD License Tracking")
+        st.caption("Track facility BNDD licenses and expiration dates.")
+        
+        # Add New License
+        with st.expander("➕ Add New License", expanded=False):
+            with st.form("add_bndd_form", clear_on_submit=True):
+                if facility_names_list:
+                    # Filter out facilities that already have a license
+                    existing_facilities = {lic["facility"] for lic in bndd_licenses}
+                    available_facilities = [f for f in facility_names_list if f not in existing_facilities]
+                    
+                    if available_facilities:
+                        col1, col2, col3 = st.columns([2, 2, 2])
+                        with col1:
+                            new_facility = st.selectbox("Facility", available_facilities)
+                        with col2:
+                            new_license_num = st.text_input("License Number", placeholder="e.g., 12345-BNDD")
+                        with col3:
+                            new_exp_date = st.date_input("Expiration Date")
+                        
+                        if st.form_submit_button("➕ Add License", use_container_width=True):
+                            if new_facility and new_license_num.strip():
+                                bndd_licenses.append({
+                                    "facility": new_facility,
+                                    "license_number": new_license_num.strip(),
+                                    "expiration_date": new_exp_date.strftime("%Y-%m-%d"),
+                                })
+                                supa.save_bndd_licenses(bndd_licenses)
+                                st.session_state.bndd_licenses = bndd_licenses
+                                st.success(f"Added license for {new_facility}")
+                                st.rerun()
+                            else:
+                                st.warning("Please fill in all fields")
+                    else:
+                        st.info("All facilities already have licenses assigned.")
+                        st.form_submit_button("➕ Add License", disabled=True)
+                else:
+                    st.warning("No facilities found. Add facilities in Pharmacy Management first.")
+                    st.form_submit_button("➕ Add License", disabled=True)
+        
+        # Display licenses table
+        if bndd_licenses:
+            st.markdown(f"**{len(bndd_licenses)} licenses tracked**")
+            
+            # Sort by expiration date (soonest first)
+            sorted_licenses = sorted(bndd_licenses, key=lambda x: x.get("expiration_date", "9999-12-31"))
+            
+            # Check for expiring soon (within 90 days)
+            today = datetime.now()
+            expiring_soon = []
+            for lic in sorted_licenses:
+                try:
+                    exp_date = datetime.strptime(lic["expiration_date"], "%Y-%m-%d")
+                    days_until = (exp_date - today).days
+                    if days_until <= 90:
+                        expiring_soon.append((lic["facility"], days_until))
+                except:
+                    pass
+            
+            if expiring_soon:
+                st.warning(f"⚠️ {len(expiring_soon)} license(s) expiring within 90 days")
+                for fac, days in expiring_soon:
+                    if days < 0:
+                        st.error(f"🔴 {fac}: EXPIRED ({abs(days)} days ago)")
+                    elif days == 0:
+                        st.error(f"🔴 {fac}: EXPIRES TODAY")
+                    elif days <= 30:
+                        st.error(f"🟠 {fac}: {days} days remaining")
+                    else:
+                        st.warning(f"🟡 {fac}: {days} days remaining")
+            
+            # Table header with custom styling
+            st.markdown("""
+            <style>
+            .bndd-header {
+                display: flex;
+                font-weight: 700;
+                padding: 12px 16px;
+                background: #f1f5f9;
+                border-radius: 8px 8px 0 0;
+                border: 1px solid #e2e8f0;
+                margin-top: 16px;
+            }
+            .bndd-header > div:nth-child(1) { flex: 2; }
+            .bndd-header > div:nth-child(2) { flex: 2; }
+            .bndd-header > div:nth-child(3) { flex: 1.5; }
+            .bndd-header > div:nth-child(4) { flex: 1; }
+            .bndd-row {
+                display: flex;
+                padding: 12px 16px;
+                border-left: 1px solid #e2e8f0;
+                border-right: 1px solid #e2e8f0;
+                border-bottom: 1px solid #e2e8f0;
+                align-items: center;
+            }
+            .bndd-row:last-child { border-radius: 0 0 8px 8px; }
+            .bndd-row > div:nth-child(1) { flex: 2; }
+            .bndd-row > div:nth-child(2) { flex: 2; }
+            .bndd-row > div:nth-child(3) { flex: 1.5; }
+            .bndd-row > div:nth-child(4) { flex: 1; }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            # Header
+            st.markdown("""
+            <div class="bndd-header">
+                <div>Facility</div>
+                <div>License Number</div>
+                <div>Expiration Date</div>
+                <div>Actions</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Rows with Streamlit columns for interactive elements
+            for i, lic in enumerate(sorted_licenses):
+                try:
+                    exp_date = datetime.strptime(lic["expiration_date"], "%Y-%m-%d")
+                    exp_display = exp_date.strftime("%b %d, %Y")
+                    days_until = (exp_date - today).days
+                    if days_until < 0:
+                        exp_color = "#dc2626"  # Red - expired
+                    elif days_until <= 30:
+                        exp_color = "#ea580c"  # Orange - urgent
+                    elif days_until <= 90:
+                        exp_color = "#ca8a04"  # Yellow - warning
+                    else:
+                        exp_color = "#059669"  # Green - good
+                except:
+                    exp_display = lic.get("expiration_date", "N/A")
+                    exp_color = "#64748b"
+                
+                col1, col2, col3, col4 = st.columns([2, 2, 1.5, 1])
+                with col1:
+                    st.markdown(f"**{lic['facility']}**")
+                with col2:
+                    st.text(lic.get("license_number", "N/A"))
+                with col3:
+                    st.markdown(f"<span style='color:{exp_color};font-weight:600;'>{exp_display}</span>", unsafe_allow_html=True)
+                with col4:
+                    if st.button("🔄 Renew", key=f"renew_{i}", use_container_width=True):
+                        st.session_state[f"renewing_{i}"] = True
+                        st.rerun()
+                
+                # Renewal form (appears when Renew is clicked)
+                if st.session_state.get(f"renewing_{i}", False):
+                    with st.form(f"renew_form_{i}"):
+                        rcol1, rcol2, rcol3 = st.columns([2, 2, 1])
+                        with rcol1:
+                            try:
+                                current_exp = datetime.strptime(lic["expiration_date"], "%Y-%m-%d").date()
+                            except:
+                                current_exp = datetime.now().date()
+                            new_exp_date = st.date_input("New Expiration Date", value=current_exp, key=f"new_exp_{i}")
+                        with rcol2:
+                            st.write("")
+                            st.write("")
+                            submitted = st.form_submit_button("💾 Save", use_container_width=True)
+                        with rcol3:
+                            st.write("")
+                            st.write("")
+                            if st.form_submit_button("❌ Cancel", use_container_width=True):
+                                st.session_state[f"renewing_{i}"] = False
+                                st.rerun()
+                        
+                        if submitted:
+                            # Find and update the license
+                            for j, existing_lic in enumerate(bndd_licenses):
+                                if existing_lic["facility"] == lic["facility"]:
+                                    bndd_licenses[j]["expiration_date"] = new_exp_date.strftime("%Y-%m-%d")
+                                    break
+                            supa.save_bndd_licenses(bndd_licenses)
+                            st.session_state.bndd_licenses = bndd_licenses
+                            st.session_state[f"renewing_{i}"] = False
+                            st.success(f"Updated expiration date for {lic['facility']}")
+                            st.rerun()
+            
+            # Edit/Delete section
+            with st.expander("✏️ Edit or Remove Licenses", expanded=False):
+                for i, lic in enumerate(bndd_licenses):
+                    with st.expander(f"**{lic['facility']}**"):
+                        edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1])
+                        with edit_col1:
+                            edit_license_num = st.text_input(
+                                "License Number",
+                                value=lic.get("license_number", ""),
+                                key=f"edit_lic_{i}"
+                            )
+                        with edit_col2:
+                            try:
+                                cur_date = datetime.strptime(lic.get("expiration_date", "2025-01-01"), "%Y-%m-%d").date()
+                            except:
+                                cur_date = datetime.now().date()
+                            edit_exp = st.date_input("Expiration Date", value=cur_date, key=f"edit_exp_{i}")
+                        with edit_col3:
+                            st.write("")
+                            if st.button("💾 Save", key=f"save_edit_{i}", use_container_width=True):
+                                bndd_licenses[i]["license_number"] = edit_license_num.strip()
+                                bndd_licenses[i]["expiration_date"] = edit_exp.strftime("%Y-%m-%d")
+                                supa.save_bndd_licenses(bndd_licenses)
+                                st.session_state.bndd_licenses = bndd_licenses
+                                st.success("Saved!")
+                                st.rerun()
+                            if st.button("🗑️ Delete", key=f"del_lic_{i}", type="secondary", use_container_width=True):
+                                del bndd_licenses[i]
+                                supa.save_bndd_licenses(bndd_licenses)
+                                st.session_state.bndd_licenses = bndd_licenses
+                                st.rerun()
+        else:
+            st.info("No BNDD licenses tracked yet. Add your first license above.")
 
 # --- PAGE: Data Explorer ---
 if current_page == "Data Explorer":
