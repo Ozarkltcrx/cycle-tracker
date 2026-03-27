@@ -2236,19 +2236,19 @@ if current_page == "QA":
                     with col1:
                         new_cubex_facility = st.selectbox("Facility", facility_names_list, key="cubex_fac_select")
                     with col2:
-                        new_serial = st.text_input("Serial Number", placeholder="e.g., CBX-12345")
+                        new_serial = st.text_input("Serial Number (optional)", placeholder="e.g., CBX-12345")
                     with col3:
                         new_restock_date = st.date_input("Re-Stock Date", key="cubex_restock_date")
                     
                     if st.form_submit_button("➕ Add Entry", use_container_width=True):
-                        if new_cubex_facility and new_serial.strip():
+                        if new_cubex_facility:
                             # Calculate next restock (11 months from restock date)
                             restock_dt = datetime.combine(new_restock_date, datetime.min.time())
                             next_restock = restock_dt + relativedelta(months=11)
                             
                             cubex_restock.append({
                                 "facility": new_cubex_facility,
-                                "serial_number": new_serial.strip(),
+                                "serial_number": new_serial.strip() if new_serial.strip() else "",
                                 "restock_date": new_restock_date.strftime("%Y-%m-%d"),
                                 "next_restock_due": next_restock.strftime("%Y-%m-%d"),
                             })
