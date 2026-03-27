@@ -2235,6 +2235,22 @@ if current_page == "User Management" and is_admin_user():
     
     users = user_config.get("credentials", {}).get("usernames", {})
     
+    # Show all users in a table at the top
+    st.markdown("#### All Users")
+    if users:
+        user_rows = []
+        for username, user_data in sorted(users.items()):
+            user_rows.append({
+                "Username": username,
+                "Display Name": user_data.get("name", "N/A"),
+                "Role": user_data.get("role", "user").capitalize(),
+            })
+        st.dataframe(pd.DataFrame(user_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No users configured.")
+    
+    st.divider()
+    
     # Add new user
     st.markdown("#### Add New User")
     with st.form("add_user_form", clear_on_submit=True):
