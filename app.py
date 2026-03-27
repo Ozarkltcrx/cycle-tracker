@@ -1897,9 +1897,9 @@ if current_page == "Pharmacy Management":
         st.markdown(f"**{len(master_facs)} facilities**")
         
         if master_facs:
-            # Build display data
+            # Build display data (sorted alphabetically)
             display_rows = []
-            for fac in master_facs:
+            for fac in sorted(master_facs, key=lambda x: x["name"].lower()):
                 next_renewal, term_type = calculate_next_renewal(
                     fac.get("start_date", ""),
                     fac.get("original_term", 3),
@@ -1916,42 +1916,45 @@ if current_page == "Pharmacy Management":
             
             st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
             
-            # Edit/Delete - collapsed by default
+            # Edit/Delete - collapsed by default (sorted alphabetically)
             with st.expander("✏️ Edit or Remove Facilities", expanded=False):
-                for i, fac in enumerate(master_facs):
+                sorted_facs = sorted(master_facs, key=lambda x: x["name"].lower())
+                for fac in sorted_facs:
+                    # Find actual index in master_facs for editing
+                    actual_idx = next(j for j, f in enumerate(master_facs) if f["name"] == fac["name"])
                     with st.expander(f"**{fac['name']}**"):
                         edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1])
                         with edit_col1:
                             edit_start = st.date_input(
                                 "Start Date", 
                                 value=datetime.strptime(fac.get("start_date", "2020-01-01"), "%Y-%m-%d"),
-                                key=f"edit_start_{i}"
+                                key=f"edit_start_{fac['name']}"
                             )
                             edit_original = st.number_input(
                                 "Original Term (yr)", 
                                 min_value=1, max_value=10, 
                                 value=fac.get("original_term", 3),
-                                key=f"edit_orig_{i}"
+                                key=f"edit_orig_{fac['name']}"
                             )
                         with edit_col2:
                             edit_renewal = st.number_input(
                                 "Renewal Term (yr)", 
                                 min_value=1, max_value=10, 
                                 value=fac.get("renewal_term", 1),
-                                key=f"edit_renew_{i}"
+                                key=f"edit_renew_{fac['name']}"
                             )
-                            if st.button("💾 Save Changes", key=f"save_{i}", use_container_width=True):
-                                master_facs[i]["start_date"] = edit_start.strftime("%Y-%m-%d")
-                                master_facs[i]["original_term"] = edit_original
-                                master_facs[i]["renewal_term"] = edit_renewal
+                            if st.button("💾 Save Changes", key=f"save_{fac['name']}", use_container_width=True):
+                                master_facs[actual_idx]["start_date"] = edit_start.strftime("%Y-%m-%d")
+                                master_facs[actual_idx]["original_term"] = edit_original
+                                master_facs[actual_idx]["renewal_term"] = edit_renewal
                                 supa.save_master_facilities(master_facs)
                                 st.success("Saved!")
                                 st.rerun()
                         with edit_col3:
                             st.write("")
                             st.write("")
-                            if st.button("🗑️ Delete", key=f"del_{i}", type="secondary"):
-                                del master_facs[i]
+                            if st.button("🗑️ Delete", key=f"del_{fac['name']}", type="secondary"):
+                                del master_facs[actual_idx]
                                 supa.save_master_facilities(master_facs)
                                 st.rerun()
         else:
