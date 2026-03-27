@@ -2229,9 +2229,8 @@ if current_page == "User Management" and is_admin_user():
     st.markdown("### 👥 User Management")
     st.caption("Add, edit, or remove users. Manage permissions.")
     
-    # Load current config
-    with open(CONFIG_PATH) as f:
-        user_config = yaml.safe_load(f)
+    # Load current config (from Supabase + local merged)
+    user_config = load_merged_config()
     
     users = user_config.get("credentials", {}).get("usernames", {})
     
