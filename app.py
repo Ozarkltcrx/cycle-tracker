@@ -2317,6 +2317,23 @@ if current_page == "QA":
             
             today = datetime.now()
             
+            # Table header
+            hcol1, hcol2, hcol3, hcol4, hcol5, hcol6 = st.columns([2, 1.5, 1.5, 1.5, 1, 0.5])
+            with hcol1:
+                st.markdown("**Facility**")
+            with hcol2:
+                st.markdown("**Serial Number**")
+            with hcol3:
+                st.markdown("**Re-Stock Date**")
+            with hcol4:
+                st.markdown("**Next Due**")
+            with hcol5:
+                st.markdown("**Days**")
+            with hcol6:
+                st.markdown("**Edit**")
+            
+            st.divider()
+            
             # Table rows with inline edit buttons
             for idx, entry in enumerate(sorted_cubex):
                 # Find actual index in cubex_restock
@@ -2339,22 +2356,25 @@ if current_page == "QA":
                 elif days_until is not None and days_until <= 90:
                     row_color = "#bbf7d0"  # Green
                 else:
-                    row_color = "#ffffff"
+                    row_color = "transparent"
                 
-                # Display row
-                col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1.5, 1.5, 1, 1])
+                # Display row with background color
+                st.markdown(f"""
+                <div style="background:{row_color};padding:4px 0;margin:-8px 0;border-radius:4px;">
+                </div>
+                """, unsafe_allow_html=True)
+                
+                col1, col2, col3, col4, col5, col6 = st.columns([2, 1.5, 1.5, 1.5, 1, 0.5])
                 with col1:
-                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'><strong>{entry['facility']}</strong></div>", unsafe_allow_html=True)
+                    st.write(entry['facility'])
                 with col2:
-                    serial_display = entry.get("serial_number", "") or "—"
-                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{serial_display}</div>", unsafe_allow_html=True)
+                    st.write(entry.get("serial_number", "") or "—")
                 with col3:
-                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{restock_dt.strftime('%b %d, %Y') if restock_dt else 'N/A'}</div>", unsafe_allow_html=True)
+                    st.write(restock_dt.strftime('%b %d, %Y') if restock_dt else 'N/A')
                 with col4:
-                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{next_due_dt.strftime('%b %d, %Y') if next_due_dt else 'N/A'}</div>", unsafe_allow_html=True)
+                    st.write(next_due_dt.strftime('%b %d, %Y') if next_due_dt else 'N/A')
                 with col5:
-                    days_display = f"{days_until} days" if days_until is not None else "N/A"
-                    st.markdown(f"<div style='background:{row_color};padding:8px;border-radius:4px;'>{days_display}</div>", unsafe_allow_html=True)
+                    st.write(f"{days_until}" if days_until is not None else "N/A")
                 with col6:
                     if st.button("✏️", key=f"edit_cubex_btn_{idx}", help="Edit"):
                         st.session_state[f"editing_cubex_{idx}"] = True
