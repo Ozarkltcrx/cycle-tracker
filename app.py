@@ -2020,6 +2020,144 @@ if current_page == "Pharmacy Management":
         }
         LOCATION_OPTIONS = list(PHARMACY_LOCATIONS.keys())
         
+        # Minutes to add per stop (for unloading, signatures, etc.)
+        MINUTES_PER_STOP = 10
+        
+        @st.cache_data(ttl=3600)  # Cache for 1 hour
+        def geocode_address(address: str) -> tuple[float, float] | None:
+            """Convert address to lat/lon using OpenRouteService geocoding."""
+            import requests
+            api_key = st.secrets.get("openrouteservice", {}).get("api_key", "")
+            if not api_key:
+                return None
+            
+            try:
+                resp = requests.get(
+                    "https://api.openrouteservice.org/geocode/search",
+                    params={"api_key": api_key, "text": address, "size": 1},
+                    timeout=10
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("features"):
+                        coords = data["features"][0]["geometry"]["coordinates"]
+                        return (coords[1], coords[0])  # lat, lon
+            except Exception:
+                pass
+            return None
+        
+        @st.cache_data(ttl=3600)  # Cache for 1 hour
+        def get_route_drive_times(addresses: list[str]) -> list[int] | None:
+            """Get drive times between consecutive addresses using OpenRouteService.
+            
+            Returns list of drive times in minutes for each leg, or None if API unavailable.
+            """
+            import requests
+            api_key = st.secrets.get("openrouteservice", {}).get("api_key", "")
+            if not api_key or len(addresses) < 2:
+                return None
+            
+            # Geocode all addresses
+            coords = []
+            for addr in addresses:
+                geo = geocode_address(addr)
+                if geo is None:
+                    return None
+                coords.append([geo[1], geo[0]])  # ORS wants [lon, lat]
+            
+            try:
+                resp = requests.post(
+                    "https://api.openrouteservice.org/v2/directions/driving-car",
+                    headers={
+                        "Authorization": api_key,
+                        "Content-Type": "application/json"
+                    },
+                    json={"coordinates": coords},
+                    timeout=15
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    segments = data.get("routes", [{}])[0].get("segments", [])
+                    # Each segment has duration in seconds
+                    return [int(seg.get("duration", 0) / 60) for seg in segments]
+            except Exception:
+                pass
+            return None
+        
+        def calculate_route_etas(
+            departure_time: str,
+            facilities: list[str],
+            start_location: str,
+            end_location: str
+        ) -> list[dict] | None:
+            """Calculate ETA for each stop on a route.
+            
+            Returns list of {facility, address, eta, drive_mins} or None if API unavailable.
+            """
+            if not facilities:
+                return None
+            
+            # Build full address list: start -> facilities -> end
+            start_addr = PHARMACY_LOCATIONS.get(start_location, PHARMACY_LOCATIONS["Bonne Terre"])
+            end_addr = PHARMACY_LOCATIONS.get(end_location, PHARMACY_LOCATIONS["Bonne Terre"])
+            
+            all_addresses = [start_addr]
+            for fac in facilities:
+                addr = facility_addresses.get(fac, "")
+                if addr:
+                    all_addresses.append(addr)
+                else:
+                    return None  # Missing address
+            all_addresses.append(end_addr)
+            
+            # Get drive times
+            drive_times = get_route_drive_times(tuple(all_addresses))
+            if drive_times is None:
+                return None
+            
+            # Parse departure time
+            try:
+                dep_hour, dep_min = map(int, departure_time.split(":"))
+                current_time = dep_hour * 60 + dep_min  # Minutes since midnight
+            except:
+                return None
+            
+            # Calculate ETAs
+            results = []
+            for i, fac in enumerate(facilities):
+                # Add drive time from previous stop
+                current_time += drive_times[i]
+                # Add stop time (10 min per stop)
+                if i > 0:
+                    current_time += MINUTES_PER_STOP
+                
+                eta_hour = (current_time // 60) % 24
+                eta_min = current_time % 60
+                eta_str = f"{eta_hour:02d}:{eta_min:02d}"
+                
+                results.append({
+                    "facility": fac,
+                    "address": facility_addresses.get(fac, ""),
+                    "eta": eta_str,
+                    "drive_mins": drive_times[i],
+                })
+            
+            # Add return to base
+            current_time += drive_times[-1] + MINUTES_PER_STOP
+            return_hour = (current_time // 60) % 24
+            return_min = current_time % 60
+            return_eta = f"{return_hour:02d}:{return_min:02d}"
+            
+            results.append({
+                "facility": f"Return to {end_location}",
+                "address": end_addr,
+                "eta": return_eta,
+                "drive_mins": drive_times[-1],
+                "is_return": True,
+            })
+            
+            return results
+        
         def get_google_maps_route_url(facilities_list: list[str], start_location: str = "Bonne Terre", end_location: str = "Bonne Terre") -> str:
             """Generate Google Maps directions URL for a route."""
             addresses = []
@@ -2107,19 +2245,39 @@ if current_page == "Pharmacy Management":
                             end_loc = route.get("end_location") or "Bonne Terre"
                             start_addr = PHARMACY_LOCATIONS.get(start_loc, PHARMACY_LOCATIONS["Bonne Terre"])
                             end_addr = PHARMACY_LOCATIONS.get(end_loc, PHARMACY_LOCATIONS["Bonne Terre"])
-                            st.caption(f"📍 Start: **{start_loc}** — {start_addr}")
+                            st.caption(f"📍 Depart **{start_loc}** at {route.get('departure_time', 'N/A')} — {start_addr}")
                             
-                            # Show facilities on route with addresses
+                            # Try to calculate ETAs
+                            etas = None
+                            if route.get("facilities"):
+                                etas = calculate_route_etas(
+                                    route.get("departure_time", "08:00"),
+                                    route["facilities"],
+                                    start_loc,
+                                    end_loc
+                                )
+                            
+                            # Show facilities on route with addresses and ETAs
                             st.markdown("**Stops (in order):**")
                             if route.get("facilities"):
-                                for stop_num, fac in enumerate(route["facilities"], 1):
-                                    addr = facility_addresses.get(fac, "")
-                                    if addr:
-                                        st.write(f"  {stop_num}. **{fac}** — {addr}")
-                                    else:
-                                        st.write(f"  {stop_num}. **{fac}** — ⚠️ No address")
-                                
-                                st.caption(f"📍 End: **{end_loc}** — {end_addr}")
+                                if etas:
+                                    # Show with ETAs
+                                    for stop_num, eta_info in enumerate(etas, 1):
+                                        if eta_info.get("is_return"):
+                                            st.markdown(f"  **→ {eta_info['eta']}** — Return to **{end_loc}** ({eta_info['drive_mins']} min drive)")
+                                        else:
+                                            st.markdown(f"  {stop_num}. **{eta_info['eta']}** — **{eta_info['facility']}** ({eta_info['drive_mins']} min drive + {MINUTES_PER_STOP} min stop)")
+                                            st.caption(f"      {eta_info['address']}")
+                                else:
+                                    # Fallback: show without ETAs
+                                    for stop_num, fac in enumerate(route["facilities"], 1):
+                                        addr = facility_addresses.get(fac, "")
+                                        if addr:
+                                            st.write(f"  {stop_num}. **{fac}** — {addr}")
+                                        else:
+                                            st.write(f"  {stop_num}. **{fac}** — ⚠️ No address")
+                                    st.caption(f"📍 End: **{end_loc}** — {end_addr}")
+                                    st.info("💡 Add OpenRouteService API key in Streamlit secrets to see ETAs")
                                 
                                 # Google Maps route button
                                 maps_url = get_google_maps_route_url(
