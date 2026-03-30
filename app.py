@@ -2087,79 +2087,113 @@ if current_page == "Pharmacy Management":
             except Exception as e:
                 return None, f"Exception: {str(e)[:50]}"
         
+        def format_time_ampm(minutes_since_midnight: int) -> str:
+            """Convert minutes since midnight to AM/PM format."""
+            hours = (minutes_since_midnight // 60) % 24
+            mins = minutes_since_midnight % 60
+            period = "AM" if hours < 12 else "PM"
+            display_hour = hours % 12
+            if display_hour == 0:
+                display_hour = 12
+            return f"{display_hour}:{mins:02d} {period}"
+        
+        def format_drive_time(minutes: int) -> str:
+            """Format drive time as hours and minutes."""
+            if minutes < 60:
+                return f"{minutes} min"
+            hours = minutes // 60
+            mins = minutes % 60
+            if mins == 0:
+                return f"{hours} hr"
+            return f"{hours} hr {mins} min"
+        
         def calculate_route_etas(
             departure_time: str,
             facilities: list[str],
             start_location: str,
             end_location: str
-        ) -> tuple[list[dict], str] | tuple[None, str]:
+        ) -> tuple[list[dict], str, int, float] | tuple[None, str, int, float]:
             """Calculate ETA for each stop on a route.
             
-            Returns (list of {facility, address, eta, drive_mins}, status) or (None, error).
+            Returns (list of stops, status, total_drive_mins, total_miles) or (None, error, 0, 0).
             """
             if not facilities:
-                return None, "No facilities"
+                return None, "No facilities", 0, 0
             
             # Build full address list: start -> facilities -> end
             start_addr = PHARMACY_LOCATIONS.get(start_location, PHARMACY_LOCATIONS["Bonne Terre"])
             end_addr = PHARMACY_LOCATIONS.get(end_location, PHARMACY_LOCATIONS["Bonne Terre"])
             
             all_addresses = [start_addr]
+            facility_addrs = []  # Track addresses for each facility to check duplicates
             for fac in facilities:
                 addr = facility_addresses.get(fac, "")
                 if addr:
                     all_addresses.append(addr)
+                    facility_addrs.append(addr)
                 else:
-                    return None, f"Missing address for: {fac}"
+                    return None, f"Missing address for: {fac}", 0, 0
             all_addresses.append(end_addr)
             
-            # Get drive times
+            # Get drive times and distances
             drive_times, status = get_route_drive_times(tuple(all_addresses))
             if drive_times is None:
-                return None, status
+                return None, status, 0, 0
             
             # Parse departure time
             try:
                 dep_hour, dep_min = map(int, departure_time.split(":"))
                 current_time = dep_hour * 60 + dep_min  # Minutes since midnight
             except:
-                return None
+                return None, "Invalid departure time", 0, 0
             
             # Calculate ETAs
             results = []
+            total_drive_mins = 0
+            prev_addr = start_addr
+            
             for i, fac in enumerate(facilities):
+                current_addr = facility_addrs[i]
+                
                 # Add drive time from previous stop
                 current_time += drive_times[i]
-                # Add stop time (10 min per stop)
-                if i > 0:
-                    current_time += MINUTES_PER_STOP
+                total_drive_mins += drive_times[i]
                 
-                eta_hour = (current_time // 60) % 24
-                eta_min = current_time % 60
-                eta_str = f"{eta_hour:02d}:{eta_min:02d}"
+                # Add stop time only if address is different from previous
+                added_stop_time = False
+                if i > 0 and prev_addr != current_addr:
+                    current_time += MINUTES_PER_STOP
+                    added_stop_time = True
                 
                 results.append({
                     "facility": fac,
-                    "address": facility_addresses.get(fac, ""),
-                    "eta": eta_str,
+                    "address": current_addr,
+                    "eta": format_time_ampm(current_time),
                     "drive_mins": drive_times[i],
+                    "added_stop_time": added_stop_time,
+                    "same_address_as_prev": (prev_addr == current_addr) if i > 0 else False,
                 })
+                
+                prev_addr = current_addr
             
-            # Add return to base
-            current_time += drive_times[-1] + MINUTES_PER_STOP
-            return_hour = (current_time // 60) % 24
-            return_min = current_time % 60
-            return_eta = f"{return_hour:02d}:{return_min:02d}"
+            # Add return to base (always add stop time for last facility)
+            if facility_addrs[-1] != end_addr:
+                current_time += MINUTES_PER_STOP
+            current_time += drive_times[-1]
+            total_drive_mins += drive_times[-1]
             
             results.append({
                 "facility": f"Return to {end_location}",
                 "address": end_addr,
-                "eta": return_eta,
+                "eta": format_time_ampm(current_time),
                 "drive_mins": drive_times[-1],
                 "is_return": True,
             })
             
-            return results, "OK"
+            # Estimate miles (roughly 1 mile per 1.5 min at avg 40mph mixed driving)
+            estimated_miles = round(total_drive_mins * 0.67, 1)
+            
+            return results, "OK", total_drive_mins, estimated_miles
         
         def get_google_maps_route_url(facilities_list: list[str], start_location: str = "Bonne Terre", end_location: str = "Bonne Terre") -> str:
             """Generate Google Maps directions URL for a route."""
@@ -2242,24 +2276,39 @@ if current_page == "Pharmacy Management":
                         # Find original index for editing
                         i = next(idx for idx, r in enumerate(routes) if r["name"] == route["name"])
                         
-                        with st.expander(f"🕐 **{route.get('departure_time', 'N/A')}** — {route['name']}"):
-                            # Show start/end info
-                            start_loc = route.get("start_location") or "Bonne Terre"
-                            end_loc = route.get("end_location") or "Bonne Terre"
-                            start_addr = PHARMACY_LOCATIONS.get(start_loc, PHARMACY_LOCATIONS["Bonne Terre"])
-                            end_addr = PHARMACY_LOCATIONS.get(end_loc, PHARMACY_LOCATIONS["Bonne Terre"])
-                            st.caption(f"📍 Depart **{start_loc}** at {route.get('departure_time', 'N/A')} — {start_addr}")
-                            
-                            # Try to calculate ETAs
-                            etas = None
-                            eta_error = None
-                            if route.get("facilities"):
-                                etas, eta_error = calculate_route_etas(
-                                    route.get("departure_time", "08:00"),
-                                    route["facilities"],
-                                    start_loc,
-                                    end_loc
-                                )
+                        # Pre-calculate ETAs to show in header
+                        start_loc = route.get("start_location") or "Bonne Terre"
+                        end_loc = route.get("end_location") or "Bonne Terre"
+                        start_addr = PHARMACY_LOCATIONS.get(start_loc, PHARMACY_LOCATIONS["Bonne Terre"])
+                        end_addr = PHARMACY_LOCATIONS.get(end_loc, PHARMACY_LOCATIONS["Bonne Terre"])
+                        
+                        etas = None
+                        eta_error = None
+                        total_drive_mins = 0
+                        total_miles = 0
+                        if route.get("facilities"):
+                            etas, eta_error, total_drive_mins, total_miles = calculate_route_etas(
+                                route.get("departure_time", "08:00"),
+                                route["facilities"],
+                                start_loc,
+                                end_loc
+                            )
+                        
+                        # Format departure time as AM/PM
+                        try:
+                            dep_h, dep_m = map(int, route.get("departure_time", "08:00").split(":"))
+                            dep_ampm = format_time_ampm(dep_h * 60 + dep_m)
+                        except:
+                            dep_ampm = route.get("departure_time", "N/A")
+                        
+                        # Build header with drive time and miles if available
+                        if total_drive_mins > 0:
+                            header = f"🕐 **{dep_ampm}** — {route['name']} — {format_drive_time(total_drive_mins)}, ~{total_miles} mi"
+                        else:
+                            header = f"🕐 **{dep_ampm}** — {route['name']}"
+                        
+                        with st.expander(header):
+                            st.caption(f"📍 Depart **{start_loc}** at {dep_ampm} — {start_addr}")
                             
                             # Show facilities on route with addresses and ETAs
                             st.markdown("**Stops (in order):**")
@@ -2268,9 +2317,17 @@ if current_page == "Pharmacy Management":
                                     # Show with ETAs
                                     for stop_num, eta_info in enumerate(etas, 1):
                                         if eta_info.get("is_return"):
-                                            st.markdown(f"  **→ {eta_info['eta']}** — Return to **{end_loc}** ({eta_info['drive_mins']} min drive)")
+                                            st.markdown(f"  **→ {eta_info['eta']}** — Return to **{end_loc}** ({format_drive_time(eta_info['drive_mins'])} drive)")
                                         else:
-                                            st.markdown(f"  {stop_num}. **{eta_info['eta']}** — **{eta_info['facility']}** ({eta_info['drive_mins']} min drive + {MINUTES_PER_STOP} min stop)")
+                                            # Build stop description
+                                            drive_str = format_drive_time(eta_info['drive_mins'])
+                                            if eta_info.get("same_address_as_prev"):
+                                                stop_str = f"  {stop_num}. **{eta_info['eta']}** — **{eta_info['facility']}** (same location)"
+                                            elif eta_info.get("added_stop_time"):
+                                                stop_str = f"  {stop_num}. **{eta_info['eta']}** — **{eta_info['facility']}** ({drive_str} + {MINUTES_PER_STOP} min stop)"
+                                            else:
+                                                stop_str = f"  {stop_num}. **{eta_info['eta']}** — **{eta_info['facility']}** ({drive_str})"
+                                            st.markdown(stop_str)
                                             st.caption(f"      {eta_info['address']}")
                                 else:
                                     # Fallback: show without ETAs
