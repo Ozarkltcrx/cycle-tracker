@@ -740,9 +740,10 @@ if config and config.get('credentials') and config.get('cookie'):
         config['cookie']['name'],
         config['cookie']['key'],
         config['cookie']['expiry_days'],  # 30 days as configured
+        auto_hash=False,  # Passwords are already hashed
     )
     
-    authenticator.login(location='main')
+    authenticator.login()
     
     if st.session_state.get("authentication_status") is None:
         st.warning("Please enter your username and password")
