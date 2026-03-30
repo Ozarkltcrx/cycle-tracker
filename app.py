@@ -2475,7 +2475,7 @@ if current_page == "QA":
                     new_expiration = st.date_input("Expiration", key="pharm_lic_exp")
                 
                 if st.form_submit_button("➕ Add License", use_container_width=True):
-                    if new_pharm_facility.strip() and new_license_num.strip():
+                    if new_pharm_facility.strip():
                         pharmacy_licenses.append({
                             "facility": new_pharm_facility.strip(),
                             "license_number": new_license_num.strip(),
