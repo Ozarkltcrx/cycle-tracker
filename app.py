@@ -78,13 +78,40 @@ FACILITIES_FILE = DATA_DIR / "facilities.json"
 SHARED_STATE_FILE = DATA_DIR / "shared_tracking_state.json"
 
 
+def get_current_week_key() -> str:
+    """Return a unique key for the current week (e.g., '2026-W13')."""
+    today = datetime.now()
+    return today.strftime("%G-W%V")
+
+
 def load_shared_state() -> dict:
-    """Load shared tracking state (Supabase or local JSON fallback)."""
-    return supa.load_tracking_state()
+    """Load shared tracking state (Supabase or local JSON fallback).
+    
+    Automatically resets tracking data when a new week starts.
+    """
+    state = supa.load_tracking_state()
+    current_week = get_current_week_key()
+    
+    # Check if we're in a new week
+    if state.get("week_key") != current_week:
+        # New week - reset tracking data but keep config
+        state = {
+            "cycle_team_tracking": {},
+            "dollar_tracking": {},
+            "unlocked_days": [],
+            "dollar_unlocked_days": [],
+            "week_key": current_week,
+        }
+        # Save the reset state
+        supa.save_tracking_state(state)
+    
+    return state
 
 
 def save_shared_state(state: dict) -> None:
     """Save shared tracking state (Supabase or local JSON fallback)."""
+    # Always include the current week key
+    state["week_key"] = get_current_week_key()
     supa.save_tracking_state(state)
 
 
