@@ -1893,8 +1893,18 @@ if current_page == "Pharmacy Management":
         st.session_state.delivery_routes = supa.load_delivery_routes()
     delivery_routes = st.session_state.delivery_routes
     
+    # Route counts for tab labels
+    am_count = len(delivery_routes.get("AM", []))
+    pm_count = len(delivery_routes.get("PM", []))
+    wknd_count = len(delivery_routes.get("Weekend", []))
+    
     # Tabs for different sections
-    pharm_tab1, pharm_tab2 = st.tabs(["📋 Facility Directory", "🚚 Delivery Routes"])
+    pharm_tab1, pharm_tab2, pharm_tab3, pharm_tab4 = st.tabs([
+        "📋 Facility Directory", 
+        f"🚚 Routes ({am_count} AM / {pm_count} PM / {wknd_count} Wknd)",
+        "🔧 Route Construction",
+        "🗺️ Facility Map"
+    ])
     
     with pharm_tab1:
         # Add New Facility button that expands to form
@@ -2423,6 +2433,210 @@ if current_page == "Pharmacy Management":
         render_route_section("AM", route_tab1)
         render_route_section("PM", route_tab2)
         render_route_section("Weekend", route_tab3)
+    
+    # ============ TAB 3: Route Construction ============
+    with pharm_tab3:
+        st.markdown("### 🔧 Route Construction")
+        st.caption("Build and compare hypothetical routes to optimize delivery times.")
+        
+        # Re-use the constants from Tab 2
+        PHARMACY_LOCATIONS = {
+            "Bonne Terre": "9 Bonneville Plaza, Bonne Terre, MO 63628",
+            "Springfield": "3550 N Glenstone Ave, Springfield, MO 65803",
+        }
+        LOCATION_OPTIONS = list(PHARMACY_LOCATIONS.keys())
+        facility_addresses_rc = {f["name"]: f.get("address", "") for f in master_facs}
+        
+        # Facilities with addresses
+        fac_with_addr = [f["name"] for f in master_facs if f.get("address")]
+        
+        if not fac_with_addr:
+            st.warning("No facilities with addresses. Add addresses in the Facility Directory first.")
+        else:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                rc_start = st.selectbox("Start Location", options=LOCATION_OPTIONS, key="rc_start")
+            with col2:
+                rc_end = st.selectbox("End Location", options=LOCATION_OPTIONS, key="rc_end")
+            with col3:
+                rc_departure = st.time_input("Departure Time", key="rc_departure")
+            
+            # Which routes is each facility currently on?
+            fac_current_routes = {}
+            for route_type in ["AM", "PM", "Weekend"]:
+                for route in delivery_routes.get(route_type, []):
+                    for fac in route.get("facilities", []):
+                        if fac not in fac_current_routes:
+                            fac_current_routes[fac] = []
+                        fac_current_routes[fac].append(f"{route_type}: {route['name']}")
+            
+            st.markdown("**Select facilities to include:**")
+            
+            # Show facilities with their current routes
+            selected_facs = st.multiselect(
+                "Facilities (select in delivery order)",
+                options=fac_with_addr,
+                format_func=lambda x: f"{x} → {', '.join(fac_current_routes.get(x, ['No route']))}",
+                key="rc_facilities"
+            )
+            
+            if selected_facs:
+                st.markdown("**Selected route:** " + " → ".join(selected_facs))
+                
+                # Build Google Maps URL for comparison
+                import urllib.parse
+                addresses = [facility_addresses_rc.get(f, "") for f in selected_facs if facility_addresses_rc.get(f)]
+                if addresses:
+                    origin = urllib.parse.quote(PHARMACY_LOCATIONS.get(rc_start, ""))
+                    destination = urllib.parse.quote(PHARMACY_LOCATIONS.get(rc_end, ""))
+                    waypoints = "|".join([urllib.parse.quote(a) for a in addresses])
+                    maps_url = f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}&waypoints={waypoints}&travelmode=driving"
+                    
+                    st.markdown(f"[🗺️ **Open in Google Maps** (view drive time & miles)]({maps_url})")
+                
+                # Show current assignments for comparison
+                st.markdown("---")
+                st.markdown("**Current route assignments:**")
+                for fac in selected_facs:
+                    current = fac_current_routes.get(fac, ["Not assigned"])
+                    addr = facility_addresses_rc.get(fac, "No address")
+                    st.write(f"• **{fac}** — {', '.join(current)}")
+                    st.caption(f"  {addr}")
+    
+    # ============ TAB 4: Facility Map ============
+    with pharm_tab4:
+        st.markdown("### 🗺️ Facility Map")
+        st.caption("View all facilities on a map, color-coded by delivery route.")
+        
+        try:
+            import folium
+            from streamlit_folium import st_folium
+            
+            PHARMACY_LOCATIONS_MAP = {
+                "Bonne Terre": "9 Bonneville Plaza, Bonne Terre, MO 63628",
+                "Springfield": "3550 N Glenstone Ave, Springfield, MO 65803",
+            }
+            
+            # Build route assignments
+            fac_routes_map = {}
+            for route_type in ["AM", "PM", "Weekend"]:
+                for route in delivery_routes.get(route_type, []):
+                    for fac in route.get("facilities", []):
+                        if fac not in fac_routes_map:
+                            fac_routes_map[fac] = {"AM": [], "PM": [], "Weekend": []}
+                        fac_routes_map[fac][route_type].append(route["name"])
+            
+            # Color scheme
+            def get_pin_color(routes):
+                has_am = bool(routes.get("AM"))
+                has_pm = bool(routes.get("PM"))
+                has_wknd = bool(routes.get("Weekend"))
+                
+                if has_am and has_pm and has_wknd:
+                    return "black"
+                elif has_am and has_pm:
+                    return "purple"
+                elif has_am and has_wknd:
+                    return "darkblue"
+                elif has_pm and has_wknd:
+                    return "darkred"
+                elif has_am:
+                    return "blue"
+                elif has_pm:
+                    return "orange"
+                elif has_wknd:
+                    return "green"
+                else:
+                    return "gray"
+            
+            st.markdown("""
+            **Color Legend:**  
+            🔵 AM only | 🟠 PM only | 🟢 Weekend only |  
+            🟣 AM+PM | 🔷 AM+Wknd | 🔴 PM+Wknd | ⚫ All | ⚪ None
+            """)
+            
+            # Create map centered on Missouri
+            m = folium.Map(location=[37.9, -91.8], zoom_start=7)
+            
+            # Geocode function (simplified, uses OpenRouteService)
+            @st.cache_data(ttl=3600)
+            def geocode_for_map(address: str):
+                import requests
+                api_key = st.secrets.get("openrouteservice", {}).get("api_key", "")
+                if not api_key or not address:
+                    return None
+                try:
+                    resp = requests.get(
+                        "https://api.openrouteservice.org/geocode/search",
+                        params={"api_key": api_key, "text": address, "size": 1},
+                        timeout=10
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("features"):
+                            coords = data["features"][0]["geometry"]["coordinates"]
+                            return (coords[1], coords[0])
+                except:
+                    pass
+                return None
+            
+            # Add facility pins
+            mapped = 0
+            not_mapped = []
+            for fac in master_facs:
+                name = fac["name"]
+                addr = fac.get("address", "")
+                if not addr:
+                    not_mapped.append(f"{name} (no address)")
+                    continue
+                
+                coords = geocode_for_map(addr)
+                if not coords:
+                    not_mapped.append(f"{name} (geocode failed)")
+                    continue
+                
+                routes = fac_routes_map.get(name, {"AM": [], "PM": [], "Weekend": []})
+                color = get_pin_color(routes)
+                
+                # Popup content
+                route_info = []
+                if routes["AM"]: route_info.append(f"AM: {', '.join(routes['AM'])}")
+                if routes["PM"]: route_info.append(f"PM: {', '.join(routes['PM'])}")
+                if routes["Weekend"]: route_info.append(f"Wknd: {', '.join(routes['Weekend'])}")
+                if not route_info: route_info.append("No route")
+                
+                popup = f"<b>{name}</b><br>{addr}<br><br>{'<br>'.join(route_info)}"
+                
+                folium.Marker(
+                    location=coords,
+                    popup=folium.Popup(popup, max_width=300),
+                    tooltip=name,
+                    icon=folium.Icon(color=color, icon="info-sign")
+                ).add_to(m)
+                mapped += 1
+            
+            # Add pharmacy locations
+            for loc_name, loc_addr in PHARMACY_LOCATIONS_MAP.items():
+                coords = geocode_for_map(loc_addr)
+                if coords:
+                    folium.Marker(
+                        location=coords,
+                        popup=f"<b>🏥 {loc_name} Pharmacy</b><br>{loc_addr}",
+                        tooltip=f"🏥 {loc_name}",
+                        icon=folium.Icon(color="red", icon="home")
+                    ).add_to(m)
+            
+            # Display map
+            st_folium(m, width=None, height=500, use_container_width=True)
+            
+            st.caption(f"📍 {mapped} facilities mapped")
+            if not_mapped:
+                with st.expander(f"⚠️ {len(not_mapped)} not mapped"):
+                    for f in not_mapped:
+                        st.write(f"• {f}")
+        
+        except ImportError:
+            st.error("Map libraries not available. Please ensure folium and streamlit-folium are installed.")
 
 # --- PAGE: QA ---
 if current_page == "QA":
