@@ -23,5 +23,5 @@ permissions:
 
 cookie:
   name: cycle_tracker_auth
-  key: some_random_key_change_this_in_production
+  key: 758faf8a3c45f16b38966c6f14d892abbdf4082a15f88a29d812e6611da1ea26
   expiry_days: 30

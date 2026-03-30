@@ -1963,6 +1963,7 @@ if current_page == "Pharmacy Management":
 # --- PAGE: QA ---
 if current_page == "QA":
     st.title("QA")
+    st.caption("DEBUG: QA page loaded - should have 4 tabs below")
     
     # Load master facilities for dropdown
     if "master_facilities" not in st.session_state:
