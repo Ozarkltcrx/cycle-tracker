@@ -2463,35 +2463,31 @@ if current_page == "QA":
         # Add New License Entry
         with st.expander("➕ Add New License", expanded=False):
             with st.form("add_pharmacy_license_form", clear_on_submit=True):
-                if facility_names_list:
-                    col1, col2 = st.columns(2)
-                    col3, col4 = st.columns(2)
-                    with col1:
-                        new_pharm_facility = st.selectbox("Facility", facility_names_list, key="pharm_lic_fac_select")
-                    with col2:
-                        new_license_num = st.text_input("License Number", placeholder="e.g., PH-12345")
-                    with col3:
-                        new_license_date = st.date_input("License Date", key="pharm_lic_date")
-                    with col4:
-                        new_expiration = st.date_input("Expiration", key="pharm_lic_exp")
-                    
-                    if st.form_submit_button("➕ Add License", use_container_width=True):
-                        if new_pharm_facility and new_license_num.strip():
-                            pharmacy_licenses.append({
-                                "facility": new_pharm_facility,
-                                "license_number": new_license_num.strip(),
-                                "license_date": new_license_date.strftime("%Y-%m-%d"),
-                                "expiration": new_expiration.strftime("%Y-%m-%d"),
-                            })
-                            supa.save_pharmacy_licenses(pharmacy_licenses)
-                            st.session_state.pharmacy_licenses = pharmacy_licenses
-                            st.success(f"Added license for {new_pharm_facility}")
-                            st.rerun()
-                        else:
-                            st.warning("Please fill in all fields")
-                else:
-                    st.warning("No facilities found. Add facilities in Pharmacy Management first.")
-                    st.form_submit_button("➕ Add License", disabled=True)
+                col1, col2 = st.columns(2)
+                col3, col4 = st.columns(2)
+                with col1:
+                    new_pharm_facility = st.text_input("Facility / License Name", placeholder="e.g., State Pharmacy License")
+                with col2:
+                    new_license_num = st.text_input("License Number", placeholder="e.g., PH-12345")
+                with col3:
+                    new_license_date = st.date_input("License Date", key="pharm_lic_date")
+                with col4:
+                    new_expiration = st.date_input("Expiration", key="pharm_lic_exp")
+                
+                if st.form_submit_button("➕ Add License", use_container_width=True):
+                    if new_pharm_facility.strip() and new_license_num.strip():
+                        pharmacy_licenses.append({
+                            "facility": new_pharm_facility.strip(),
+                            "license_number": new_license_num.strip(),
+                            "license_date": new_license_date.strftime("%Y-%m-%d"),
+                            "expiration": new_expiration.strftime("%Y-%m-%d"),
+                        })
+                        supa.save_pharmacy_licenses(pharmacy_licenses)
+                        st.session_state.pharmacy_licenses = pharmacy_licenses
+                        st.success(f"Added license for {new_pharm_facility}")
+                        st.rerun()
+                    else:
+                        st.warning("Please fill in all fields")
         
         # Edit Existing Entry
         if pharmacy_licenses:
