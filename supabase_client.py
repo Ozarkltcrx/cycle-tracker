@@ -509,6 +509,56 @@ def save_pharmacy_licenses(licenses: list[dict]) -> None:
     PHARMACY_LICENSES_FILE.write_text(json.dumps(licenses, indent=2))
 
 
+# ── Delivery Routes Tracking ────────────────────────────────────────────────
+
+DELIVERY_ROUTES_FILE = DATA_DIR / "delivery_routes.json"
+
+def load_delivery_routes() -> dict:
+    """Load delivery routes data.
+    
+    Structure:
+    {
+        "AM": [{"name": "Route 1", "facilities": ["Fac A", "Fac B"], "departure_time": "08:00"}, ...],
+        "PM": [...],
+        "Weekend": [...]
+    }
+    """
+    default = {"AM": [], "PM": [], "Weekend": []}
+    if _USE_SUPABASE:
+        try:
+            resp = _supabase_client.table("tracking_state").select("value").eq("key", "delivery_routes").execute()
+            if resp.data:
+                return resp.data[0]["value"]
+        except Exception:
+            pass
+        return default
+    
+    # Fallback: local JSON
+    if DELIVERY_ROUTES_FILE.exists():
+        try:
+            return json.loads(DELIVERY_ROUTES_FILE.read_text())
+        except Exception:
+            pass
+    return default
+
+
+def save_delivery_routes(routes: dict) -> None:
+    """Save delivery routes data."""
+    if _USE_SUPABASE:
+        try:
+            _supabase_client.table("tracking_state").upsert(
+                {"key": "delivery_routes", "value": routes},
+                on_conflict="key",
+            ).execute()
+            return
+        except Exception:
+            pass
+    
+    # Fallback: local JSON
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DELIVERY_ROUTES_FILE.write_text(json.dumps(routes, indent=2))
+
+
 def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com") -> str:
     """Export current week's bag counts (Mon-Fri only) to CSV, email it, and reset for new week.
     

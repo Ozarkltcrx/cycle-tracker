@@ -1888,8 +1888,13 @@ if current_page == "Pharmacy Management":
         
         return (current_end.strftime("%b %d, %Y"), f"Renewal ({renewal_term}yr)")
     
+    # Load delivery routes
+    if "delivery_routes" not in st.session_state:
+        st.session_state.delivery_routes = supa.load_delivery_routes()
+    delivery_routes = st.session_state.delivery_routes
+    
     # Tabs for different sections
-    pharm_tab1, = st.tabs(["📋 Facility Directory"])
+    pharm_tab1, pharm_tab2 = st.tabs(["📋 Facility Directory", "🚚 Delivery Routes"])
     
     with pharm_tab1:
         # Add New Facility button that expands to form
@@ -1987,6 +1992,114 @@ if current_page == "Pharmacy Management":
                                 st.rerun()
         else:
             st.info("No facilities added yet. Click 'Add New Facility' above to add your first facility.")
+    
+    # ============ TAB 2: Delivery Routes ============
+    with pharm_tab2:
+        st.markdown("### 🚚 Delivery Routes")
+        st.caption("Manage delivery routes by time of day.")
+        
+        # Get facility names for multiselect
+        facility_names = sorted([f["name"] for f in master_facs])
+        
+        # Sub-tabs for AM, PM, Weekend
+        route_tab1, route_tab2, route_tab3 = st.tabs(["🌅 AM Routes", "🌆 PM Routes", "📅 Weekend Routes"])
+        
+        def render_route_section(route_type: str, tab_container):
+            """Render a route management section for a given route type."""
+            with tab_container:
+                routes = delivery_routes.get(route_type, [])
+                
+                # Add New Route
+                with st.expander(f"➕ Add New {route_type} Route", expanded=False):
+                    with st.form(f"add_{route_type}_route_form", clear_on_submit=True):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            new_route_name = st.text_input("Route Name", placeholder="e.g., North Route", key=f"new_route_name_{route_type}")
+                        with col2:
+                            new_departure = st.time_input("Departure Time", key=f"new_departure_{route_type}")
+                        
+                        new_facilities = st.multiselect(
+                            "Select Facilities on Route",
+                            options=facility_names,
+                            key=f"new_facilities_{route_type}"
+                        )
+                        
+                        if st.form_submit_button("➕ Add Route", use_container_width=True):
+                            if new_route_name.strip():
+                                if route_type not in delivery_routes:
+                                    delivery_routes[route_type] = []
+                                delivery_routes[route_type].append({
+                                    "name": new_route_name.strip(),
+                                    "facilities": new_facilities,
+                                    "departure_time": new_departure.strftime("%H:%M"),
+                                })
+                                supa.save_delivery_routes(delivery_routes)
+                                st.session_state.delivery_routes = delivery_routes
+                                st.success(f"Added route '{new_route_name}'")
+                                st.rerun()
+                            else:
+                                st.warning("Please enter a route name")
+                
+                # Display existing routes
+                if routes:
+                    st.markdown(f"**{len(routes)} {route_type} route(s)**")
+                    
+                    for i, route in enumerate(routes):
+                        with st.expander(f"**{route['name']}** — Departs {route.get('departure_time', 'N/A')}"):
+                            # Show facilities on route
+                            st.markdown("**Facilities on this route:**")
+                            if route.get("facilities"):
+                                for fac in route["facilities"]:
+                                    st.write(f"  • {fac}")
+                            else:
+                                st.write("  (No facilities assigned)")
+                            
+                            st.divider()
+                            
+                            # Edit form
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                edit_name = st.text_input("Route Name", value=route["name"], key=f"edit_name_{route_type}_{i}")
+                            with col2:
+                                try:
+                                    current_time = datetime.strptime(route.get("departure_time", "08:00"), "%H:%M").time()
+                                except:
+                                    current_time = datetime.strptime("08:00", "%H:%M").time()
+                                edit_departure = st.time_input("Departure Time", value=current_time, key=f"edit_dep_{route_type}_{i}")
+                            
+                            edit_facilities = st.multiselect(
+                                "Facilities on Route",
+                                options=facility_names,
+                                default=route.get("facilities", []),
+                                key=f"edit_facs_{route_type}_{i}"
+                            )
+                            
+                            btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 2])
+                            with btn_col1:
+                                if st.button("💾 Save", key=f"save_route_{route_type}_{i}", use_container_width=True):
+                                    delivery_routes[route_type][i] = {
+                                        "name": edit_name.strip(),
+                                        "facilities": edit_facilities,
+                                        "departure_time": edit_departure.strftime("%H:%M"),
+                                    }
+                                    supa.save_delivery_routes(delivery_routes)
+                                    st.session_state.delivery_routes = delivery_routes
+                                    st.success("Saved!")
+                                    st.rerun()
+                            with btn_col2:
+                                if st.button("🗑️ Delete", key=f"del_route_{route_type}_{i}", type="secondary", use_container_width=True):
+                                    del delivery_routes[route_type][i]
+                                    supa.save_delivery_routes(delivery_routes)
+                                    st.session_state.delivery_routes = delivery_routes
+                                    st.success("Deleted!")
+                                    st.rerun()
+                else:
+                    st.info(f"No {route_type} routes yet. Add one above.")
+        
+        # Render each route section
+        render_route_section("AM", route_tab1)
+        render_route_section("PM", route_tab2)
+        render_route_section("Weekend", route_tab3)
 
 # --- PAGE: QA ---
 if current_page == "QA":
