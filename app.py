@@ -2047,22 +2047,24 @@ if current_page == "Pharmacy Management":
             return None
         
         @st.cache_data(ttl=3600)  # Cache for 1 hour
-        def get_route_drive_times(addresses: list[str]) -> list[int] | None:
+        def get_route_drive_times(addresses: tuple[str]) -> tuple[list[int], str] | tuple[None, str]:
             """Get drive times between consecutive addresses using OpenRouteService.
             
-            Returns list of drive times in minutes for each leg, or None if API unavailable.
+            Returns (list of drive times in minutes, status) or (None, error message).
             """
             import requests
             api_key = st.secrets.get("openrouteservice", {}).get("api_key", "")
-            if not api_key or len(addresses) < 2:
-                return None
+            if not api_key:
+                return None, "No API key"
+            if len(addresses) < 2:
+                return None, "Need at least 2 addresses"
             
             # Geocode all addresses
             coords = []
             for addr in addresses:
                 geo = geocode_address(addr)
                 if geo is None:
-                    return None
+                    return None, f"Could not geocode: {addr[:50]}..."
                 coords.append([geo[1], geo[0]])  # ORS wants [lon, lat]
             
             try:
@@ -2079,23 +2081,24 @@ if current_page == "Pharmacy Management":
                     data = resp.json()
                     segments = data.get("routes", [{}])[0].get("segments", [])
                     # Each segment has duration in seconds
-                    return [int(seg.get("duration", 0) / 60) for seg in segments]
-            except Exception:
-                pass
-            return None
+                    return [int(seg.get("duration", 0) / 60) for seg in segments], "OK"
+                else:
+                    return None, f"API error: {resp.status_code}"
+            except Exception as e:
+                return None, f"Exception: {str(e)[:50]}"
         
         def calculate_route_etas(
             departure_time: str,
             facilities: list[str],
             start_location: str,
             end_location: str
-        ) -> list[dict] | None:
+        ) -> tuple[list[dict], str] | tuple[None, str]:
             """Calculate ETA for each stop on a route.
             
-            Returns list of {facility, address, eta, drive_mins} or None if API unavailable.
+            Returns (list of {facility, address, eta, drive_mins}, status) or (None, error).
             """
             if not facilities:
-                return None
+                return None, "No facilities"
             
             # Build full address list: start -> facilities -> end
             start_addr = PHARMACY_LOCATIONS.get(start_location, PHARMACY_LOCATIONS["Bonne Terre"])
@@ -2107,13 +2110,13 @@ if current_page == "Pharmacy Management":
                 if addr:
                     all_addresses.append(addr)
                 else:
-                    return None  # Missing address
+                    return None, f"Missing address for: {fac}"
             all_addresses.append(end_addr)
             
             # Get drive times
-            drive_times = get_route_drive_times(tuple(all_addresses))
+            drive_times, status = get_route_drive_times(tuple(all_addresses))
             if drive_times is None:
-                return None
+                return None, status
             
             # Parse departure time
             try:
@@ -2156,7 +2159,7 @@ if current_page == "Pharmacy Management":
                 "is_return": True,
             })
             
-            return results
+            return results, "OK"
         
         def get_google_maps_route_url(facilities_list: list[str], start_location: str = "Bonne Terre", end_location: str = "Bonne Terre") -> str:
             """Generate Google Maps directions URL for a route."""
@@ -2249,8 +2252,9 @@ if current_page == "Pharmacy Management":
                             
                             # Try to calculate ETAs
                             etas = None
+                            eta_error = None
                             if route.get("facilities"):
-                                etas = calculate_route_etas(
+                                etas, eta_error = calculate_route_etas(
                                     route.get("departure_time", "08:00"),
                                     route["facilities"],
                                     start_loc,
@@ -2278,13 +2282,9 @@ if current_page == "Pharmacy Management":
                                             st.write(f"  {stop_num}. **{fac}** — ⚠️ No address")
                                     st.caption(f"📍 End: **{end_loc}** — {end_addr}")
                                     
-                                    # Debug info
-                                    has_key = bool(st.secrets.get("openrouteservice", {}).get("api_key", ""))
-                                    all_have_addr = all(facility_addresses.get(f, "") for f in route["facilities"])
-                                    if not has_key:
-                                        st.info("💡 Add OpenRouteService API key in Streamlit secrets to see ETAs")
-                                    elif not all_have_addr:
-                                        st.warning("⚠️ Some facilities are missing addresses")
+                                    # Show why ETAs failed
+                                    if eta_error:
+                                        st.warning(f"⚠️ ETA calculation: {eta_error}")
                                 
                                 # Google Maps route button
                                 maps_url = get_google_maps_route_url(
