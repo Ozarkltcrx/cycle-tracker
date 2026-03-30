@@ -2228,6 +2228,33 @@ if current_page == "Pharmacy Management":
             
             return f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}&waypoints={waypoints}&travelmode=driving"
         
+        # Quick actions
+        with st.expander("⚡ Quick Actions", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.button("📋 Copy AM → Weekend", use_container_width=True):
+                    import copy
+                    delivery_routes["Weekend"] = copy.deepcopy(delivery_routes.get("AM", []))
+                    supa.save_delivery_routes(delivery_routes)
+                    st.session_state.delivery_routes = delivery_routes
+                    st.success("Copied AM routes to Weekend!")
+                    st.rerun()
+            with col2:
+                if st.button("📋 Copy PM → Weekend", use_container_width=True):
+                    import copy
+                    delivery_routes["Weekend"] = copy.deepcopy(delivery_routes.get("PM", []))
+                    supa.save_delivery_routes(delivery_routes)
+                    st.session_state.delivery_routes = delivery_routes
+                    st.success("Copied PM routes to Weekend!")
+                    st.rerun()
+            with col3:
+                if st.button("🗑️ Clear Weekend Routes", use_container_width=True, type="secondary"):
+                    delivery_routes["Weekend"] = []
+                    supa.save_delivery_routes(delivery_routes)
+                    st.session_state.delivery_routes = delivery_routes
+                    st.success("Cleared Weekend routes!")
+                    st.rerun()
+        
         # Sub-tabs for AM, PM, Weekend
         route_tab1, route_tab2, route_tab3 = st.tabs(["🌅 AM Routes", "🌆 PM Routes", "📅 Weekend Routes"])
         
