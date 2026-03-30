@@ -2517,42 +2517,54 @@ if current_page == "Pharmacy Management":
                 "Springfield": "3550 N Glenstone Ave, Springfield, MO 65803",
             }
             
-            # Build route assignments
+            # Build route assignments - track which ROUTE NAME each facility is on
             fac_routes_map = {}
             for route_type in ["AM", "PM", "Weekend"]:
                 for route in delivery_routes.get(route_type, []):
+                    route_name = route.get("name", "Unknown")
                     for fac in route.get("facilities", []):
                         if fac not in fac_routes_map:
-                            fac_routes_map[fac] = {"AM": [], "PM": [], "Weekend": []}
-                        fac_routes_map[fac][route_type].append(route["name"])
+                            fac_routes_map[fac] = {"AM": [], "PM": [], "Weekend": [], "route_names": set()}
+                        fac_routes_map[fac][route_type].append(route_name)
+                        fac_routes_map[fac]["route_names"].add(route_name)
             
-            # Color scheme
-            def get_pin_color(routes):
-                has_am = bool(routes.get("AM"))
-                has_pm = bool(routes.get("PM"))
-                has_wknd = bool(routes.get("Weekend"))
+            # Color scheme based on ROUTE NAME
+            ROUTE_COLORS = {
+                "North 1": "blue",
+                "North 2": "darkblue", 
+                "I-70": "green",
+                "Mid-South": "orange",
+                "South": "red",
+            }
+            
+            def get_pin_color(routes_info):
+                route_names = routes_info.get("route_names", set())
+                if not route_names:
+                    return "gray"  # No route assigned
                 
-                if has_am and has_pm and has_wknd:
-                    return "black"
-                elif has_am and has_pm:
-                    return "purple"
-                elif has_am and has_wknd:
-                    return "darkblue"
-                elif has_pm and has_wknd:
-                    return "darkred"
-                elif has_am:
-                    return "blue"
-                elif has_pm:
-                    return "orange"
-                elif has_wknd:
-                    return "green"
-                else:
-                    return "gray"
+                # If facility is on multiple different routes, use purple
+                # Otherwise use the color for that route
+                unique_routes = set()
+                for name in route_names:
+                    # Normalize route name (case-insensitive match)
+                    for known_route in ROUTE_COLORS:
+                        if known_route.lower() in name.lower():
+                            unique_routes.add(known_route)
+                            break
+                    else:
+                        unique_routes.add(name)  # Unknown route
+                
+                if len(unique_routes) > 1:
+                    return "purple"  # Multiple different routes
+                elif len(unique_routes) == 1:
+                    route = list(unique_routes)[0]
+                    return ROUTE_COLORS.get(route, "cadetblue")  # Default for unknown routes
+                return "gray"
             
             st.markdown("""
-            **Color Legend:**  
-            🔵 AM only | 🟠 PM only | 🟢 Weekend only |  
-            🟣 AM+PM | 🔷 AM+Wknd | 🔴 PM+Wknd | ⚫ All | ⚪ None
+            **Route Colors:**  
+            🔵 North 1 | 🔷 North 2 | 🟢 I-70 | 🟠 Mid-South | 🔴 South |  
+            🟣 Multiple Routes | ⚪ No Route
             """)
             
             # Create map centered on Missouri
