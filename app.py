@@ -2277,7 +2277,14 @@ if current_page == "Pharmacy Management":
                                         else:
                                             st.write(f"  {stop_num}. **{fac}** — ⚠️ No address")
                                     st.caption(f"📍 End: **{end_loc}** — {end_addr}")
-                                    st.info("💡 Add OpenRouteService API key in Streamlit secrets to see ETAs")
+                                    
+                                    # Debug info
+                                    has_key = bool(st.secrets.get("openrouteservice", {}).get("api_key", ""))
+                                    all_have_addr = all(facility_addresses.get(f, "") for f in route["facilities"])
+                                    if not has_key:
+                                        st.info("💡 Add OpenRouteService API key in Streamlit secrets to see ETAs")
+                                    elif not all_have_addr:
+                                        st.warning("⚠️ Some facilities are missing addresses")
                                 
                                 # Google Maps route button
                                 maps_url = get_google_maps_route_url(
