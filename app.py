@@ -2013,9 +2013,10 @@ if current_page == "Pharmacy Management":
         facility_addresses = {f["name"]: f.get("address", "") for f in master_facs}
         
         # Pharmacy starting address (can be configured)
-        PHARMACY_ADDRESS = "1245 E. Republic Rd, Springfield, MO 65807"
+        # Default starting/ending address for all routes
+        DEFAULT_PHARMACY_ADDRESS = "9 Bonneville Plaza, Bonne Terre, MO 63628"
         
-        def get_google_maps_route_url(facilities_list: list[str]) -> str:
+        def get_google_maps_route_url(facilities_list: list[str], start_address: str = None, end_address: str = None) -> str:
             """Generate Google Maps directions URL for a route."""
             addresses = []
             for fac_name in facilities_list:
@@ -2026,10 +2027,14 @@ if current_page == "Pharmacy Management":
             if not addresses:
                 return None
             
-            # Google Maps directions: origin -> waypoints -> destination (loop back)
+            # Use custom start/end or default to pharmacy
+            origin_addr = start_address if start_address else DEFAULT_PHARMACY_ADDRESS
+            dest_addr = end_address if end_address else DEFAULT_PHARMACY_ADDRESS
+            
+            # Google Maps directions: origin -> waypoints -> destination
             import urllib.parse
-            origin = urllib.parse.quote(PHARMACY_ADDRESS)
-            destination = urllib.parse.quote(PHARMACY_ADDRESS)  # Return to pharmacy
+            origin = urllib.parse.quote(origin_addr)
+            destination = urllib.parse.quote(dest_addr)
             waypoints = "|".join([urllib.parse.quote(addr) for addr in addresses])
             
             return f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}&waypoints={waypoints}&travelmode=driving"
@@ -2060,6 +2065,13 @@ if current_page == "Pharmacy Management":
                             key=f"new_facilities_{route_type}"
                         )
                         
+                        st.caption(f"Default start/end: {DEFAULT_PHARMACY_ADDRESS}")
+                        col3, col4 = st.columns(2)
+                        with col3:
+                            new_start_addr = st.text_input("Custom Start Address (optional)", placeholder="Leave blank for default", key=f"new_start_{route_type}")
+                        with col4:
+                            new_end_addr = st.text_input("Custom End Address (optional)", placeholder="Leave blank for default", key=f"new_end_{route_type}")
+                        
                         if st.form_submit_button("➕ Add Route", use_container_width=True):
                             if new_route_name.strip():
                                 if route_type not in delivery_routes:
@@ -2068,6 +2080,8 @@ if current_page == "Pharmacy Management":
                                     "name": new_route_name.strip(),
                                     "facilities": new_facilities,
                                     "departure_time": new_departure.strftime("%H:%M"),
+                                    "start_address": new_start_addr.strip() if new_start_addr.strip() else None,
+                                    "end_address": new_end_addr.strip() if new_end_addr.strip() else None,
                                 })
                                 supa.save_delivery_routes(delivery_routes)
                                 st.session_state.delivery_routes = delivery_routes
@@ -2085,6 +2099,11 @@ if current_page == "Pharmacy Management":
                         i = next(idx for idx, r in enumerate(routes) if r["name"] == route["name"])
                         
                         with st.expander(f"🕐 **{route.get('departure_time', 'N/A')}** — {route['name']}"):
+                            # Show start/end info
+                            start_addr = route.get("start_address") or DEFAULT_PHARMACY_ADDRESS
+                            end_addr = route.get("end_address") or DEFAULT_PHARMACY_ADDRESS
+                            st.caption(f"📍 Start: {start_addr}")
+                            
                             # Show facilities on route with addresses
                             st.markdown("**Stops (in order):**")
                             if route.get("facilities"):
@@ -2095,8 +2114,14 @@ if current_page == "Pharmacy Management":
                                     else:
                                         st.write(f"  {stop_num}. **{fac}** — ⚠️ No address")
                                 
+                                st.caption(f"📍 End: {end_addr}")
+                                
                                 # Google Maps route button
-                                maps_url = get_google_maps_route_url(route["facilities"])
+                                maps_url = get_google_maps_route_url(
+                                    route["facilities"],
+                                    start_address=route.get("start_address"),
+                                    end_address=route.get("end_address")
+                                )
                                 if maps_url:
                                     st.markdown(f"[🗺️ **Open Route in Google Maps**]({maps_url})")
                                     st.caption("Google Maps will calculate miles and drive time for the fastest route.")
@@ -2119,11 +2144,28 @@ if current_page == "Pharmacy Management":
                                 edit_departure = st.time_input("Departure Time", value=current_time, key=f"edit_dep_{route_type}_{i}")
                             
                             edit_facilities = st.multiselect(
-                                "Facilities on Route (drag to reorder in delivery order)",
+                                "Facilities on Route (in delivery order)",
                                 options=facility_names,
                                 default=route.get("facilities", []),
                                 key=f"edit_facs_{route_type}_{i}"
                             )
+                            
+                            st.caption(f"Default start/end: {DEFAULT_PHARMACY_ADDRESS}")
+                            col3, col4 = st.columns(2)
+                            with col3:
+                                edit_start = st.text_input(
+                                    "Custom Start Address", 
+                                    value=route.get("start_address") or "",
+                                    placeholder="Leave blank for default",
+                                    key=f"edit_start_{route_type}_{i}"
+                                )
+                            with col4:
+                                edit_end = st.text_input(
+                                    "Custom End Address",
+                                    value=route.get("end_address") or "",
+                                    placeholder="Leave blank for default",
+                                    key=f"edit_end_{route_type}_{i}"
+                                )
                             
                             btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 2])
                             with btn_col1:
@@ -2132,6 +2174,8 @@ if current_page == "Pharmacy Management":
                                         "name": edit_name.strip(),
                                         "facilities": edit_facilities,
                                         "departure_time": edit_departure.strftime("%H:%M"),
+                                        "start_address": edit_start.strip() if edit_start.strip() else None,
+                                        "end_address": edit_end.strip() if edit_end.strip() else None,
                                     }
                                     supa.save_delivery_routes(delivery_routes)
                                     st.session_state.delivery_routes = delivery_routes
