@@ -1980,8 +1980,13 @@ if current_page == "QA":
         st.session_state.cubex_restock = supa.load_cubex_restock()
     cubex_restock = st.session_state.cubex_restock
     
-    # Tabs: Dashboard, BNDD License, Cubex Re-Stock
-    qa_tab1, qa_tab2, qa_tab3 = st.tabs(["📊 Dashboard", "📋 BNDD License", "📦 Cubex Re-Stock"])
+    # Load Pharmacy licenses data
+    if "pharmacy_licenses" not in st.session_state:
+        st.session_state.pharmacy_licenses = supa.load_pharmacy_licenses()
+    pharmacy_licenses = st.session_state.pharmacy_licenses
+    
+    # Tabs: Dashboard, BNDD License, Cubex Re-Stock, Pharmacy Licenses
+    qa_tab1, qa_tab2, qa_tab3, qa_tab4 = st.tabs(["📊 Dashboard", "📋 BNDD License", "📦 Cubex Re-Stock", "🏥 Pharmacy Licenses"])
     
     # ============ TAB 1: QA Dashboard ============
     with qa_tab1:
@@ -2078,6 +2083,52 @@ if current_page == "QA":
             st.caption(f"{len(expiring_cubex)} Cubex machine(s) due for re-stock within 90 days")
         else:
             st.success("✅ No Cubex re-stocks due within 90 days")
+        
+        st.divider()
+        
+        # Pharmacy Licenses expiring within 90 days
+        st.markdown("#### 🏥 Pharmacy Licenses Expiring Soon")
+        
+        expiring_pharm = []
+        for entry in pharmacy_licenses:
+            try:
+                exp_dt = datetime.strptime(entry["expiration"], "%Y-%m-%d")
+                days_until = (exp_dt - today).days
+                if days_until <= 90:
+                    expiring_pharm.append({
+                        "Facility": entry["facility"],
+                        "License Number": entry.get("license_number", "") or "—",
+                        "Expiration": exp_dt.strftime("%b %d, %Y"),
+                        "Days Until Expiration": days_until,
+                    })
+            except:
+                pass
+        
+        if expiring_pharm:
+            # Sort by soonest expiration first
+            expiring_pharm.sort(key=lambda x: x["Days Until Expiration"])
+            
+            # Create DataFrame
+            pharm_dash_df = pd.DataFrame(expiring_pharm)
+            
+            # Style function for row colors
+            def color_pharm_dash_rows(row):
+                days = row["Days Until Expiration"]
+                if days <= 30:
+                    return ["background-color: #fecaca"] * len(row)  # Red
+                elif days <= 60:
+                    return ["background-color: #fef08a"] * len(row)  # Yellow
+                else:
+                    return ["background-color: #bbf7d0"] * len(row)  # Green
+            
+            # Apply styling
+            styled_pharm_dash_df = pharm_dash_df.style.apply(color_pharm_dash_rows, axis=1)
+            
+            # Display
+            st.dataframe(styled_pharm_dash_df, use_container_width=True, hide_index=True)
+            st.caption(f"{len(expiring_pharm)} pharmacy license(s) expiring within 90 days")
+        else:
+            st.success("✅ No pharmacy licenses expiring within 90 days")
     
     # ============ TAB 2: BNDD License ============
     with qa_tab2:
@@ -2403,6 +2454,144 @@ if current_page == "QA":
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
         else:
             st.info("No Cubex machines tracked yet. Add your first entry above.")
+    
+    # ============ TAB 4: Pharmacy Licenses ============
+    with qa_tab4:
+        st.markdown("### Pharmacy Licenses and Inspection Dates")
+        st.caption("Track pharmacy licenses and their expiration dates.")
+        
+        # Add New License Entry
+        with st.expander("➕ Add New License", expanded=False):
+            with st.form("add_pharmacy_license_form", clear_on_submit=True):
+                if facility_names_list:
+                    col1, col2 = st.columns(2)
+                    col3, col4 = st.columns(2)
+                    with col1:
+                        new_pharm_facility = st.selectbox("Facility", facility_names_list, key="pharm_lic_fac_select")
+                    with col2:
+                        new_license_num = st.text_input("License Number", placeholder="e.g., PH-12345")
+                    with col3:
+                        new_license_date = st.date_input("License Date", key="pharm_lic_date")
+                    with col4:
+                        new_expiration = st.date_input("Expiration", key="pharm_lic_exp")
+                    
+                    if st.form_submit_button("➕ Add License", use_container_width=True):
+                        if new_pharm_facility and new_license_num.strip():
+                            pharmacy_licenses.append({
+                                "facility": new_pharm_facility,
+                                "license_number": new_license_num.strip(),
+                                "license_date": new_license_date.strftime("%Y-%m-%d"),
+                                "expiration": new_expiration.strftime("%Y-%m-%d"),
+                            })
+                            supa.save_pharmacy_licenses(pharmacy_licenses)
+                            st.session_state.pharmacy_licenses = pharmacy_licenses
+                            st.success(f"Added license for {new_pharm_facility}")
+                            st.rerun()
+                        else:
+                            st.warning("Please fill in all fields")
+                else:
+                    st.warning("No facilities found. Add facilities in Pharmacy Management first.")
+                    st.form_submit_button("➕ Add License", disabled=True)
+        
+        # Edit Existing Entry
+        if pharmacy_licenses:
+            with st.expander("✏️ Edit Existing License", expanded=False):
+                # Dropdown to select facility
+                pharm_options = [f"{e['facility']} — {e.get('license_number', '') or 'No license #'}" for e in pharmacy_licenses]
+                selected_pharm = st.selectbox("Select License to Edit", pharm_options, key="pharm_edit_select")
+                
+                if selected_pharm:
+                    # Find the selected entry
+                    selected_pharm_idx = pharm_options.index(selected_pharm)
+                    pharm_entry = pharmacy_licenses[selected_pharm_idx]
+                    
+                    col1, col2 = st.columns(2)
+                    col3, col4 = st.columns(2)
+                    with col1:
+                        edit_pharm_license = st.text_input("License Number", value=pharm_entry.get("license_number", ""), key="pharm_edit_license")
+                    with col2:
+                        try:
+                            cur_license_date = datetime.strptime(pharm_entry.get("license_date", "2025-01-01"), "%Y-%m-%d").date()
+                        except:
+                            cur_license_date = datetime.now().date()
+                        edit_license_date = st.date_input("License Date", value=cur_license_date, key="pharm_edit_lic_date")
+                    with col3:
+                        try:
+                            cur_expiration = datetime.strptime(pharm_entry.get("expiration", "2025-01-01"), "%Y-%m-%d").date()
+                        except:
+                            cur_expiration = datetime.now().date()
+                        edit_expiration = st.date_input("Expiration", value=cur_expiration, key="pharm_edit_exp")
+                    
+                    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 2])
+                    with btn_col1:
+                        if st.button("💾 Save Changes", key="pharm_save_edit", use_container_width=True):
+                            pharmacy_licenses[selected_pharm_idx]["license_number"] = edit_pharm_license.strip()
+                            pharmacy_licenses[selected_pharm_idx]["license_date"] = edit_license_date.strftime("%Y-%m-%d")
+                            pharmacy_licenses[selected_pharm_idx]["expiration"] = edit_expiration.strftime("%Y-%m-%d")
+                            supa.save_pharmacy_licenses(pharmacy_licenses)
+                            st.session_state.pharmacy_licenses = pharmacy_licenses
+                            st.success(f"Updated {pharm_entry['facility']}")
+                            st.rerun()
+                    with btn_col2:
+                        if st.button("🗑️ Delete", key="pharm_delete", type="secondary", use_container_width=True):
+                            del pharmacy_licenses[selected_pharm_idx]
+                            supa.save_pharmacy_licenses(pharmacy_licenses)
+                            st.session_state.pharmacy_licenses = pharmacy_licenses
+                            st.success(f"Deleted {pharm_entry['facility']}")
+                            st.rerun()
+        
+        # Display Pharmacy Licenses table
+        if pharmacy_licenses:
+            st.markdown(f"**{len(pharmacy_licenses)} pharmacy licenses tracked**")
+            
+            # Sort alphabetically by facility name
+            sorted_pharm = sorted(pharmacy_licenses, key=lambda x: x.get("facility", "").lower())
+            
+            today = datetime.now()
+            
+            # Build display data for DataFrame
+            pharm_display_rows = []
+            for entry in sorted_pharm:
+                try:
+                    license_dt = datetime.strptime(entry["license_date"], "%Y-%m-%d")
+                    exp_dt = datetime.strptime(entry["expiration"], "%Y-%m-%d")
+                    days_until = (exp_dt - today).days
+                except:
+                    license_dt = None
+                    exp_dt = None
+                    days_until = None
+                
+                pharm_display_rows.append({
+                    "Facility": entry["facility"],
+                    "License Number": entry.get("license_number", "") or "—",
+                    "License Date": license_dt.strftime("%b %d, %Y") if license_dt else "N/A",
+                    "Expiration": exp_dt.strftime("%b %d, %Y") if exp_dt else "N/A",
+                    "Days": days_until if days_until is not None else 999,
+                })
+            
+            # Create DataFrame
+            pharm_df = pd.DataFrame(pharm_display_rows)
+            
+            # Style function for row colors based on Days column
+            def color_pharm_rows(row):
+                days = row["Days"]
+                if days == 999 or days == "N/A":
+                    return ["background-color: white"] * len(row)
+                if days <= 30:
+                    return ["background-color: #fecaca"] * len(row)  # Red
+                elif days <= 60:
+                    return ["background-color: #fef08a"] * len(row)  # Yellow
+                elif days <= 90:
+                    return ["background-color: #bbf7d0"] * len(row)  # Green
+                return ["background-color: white"] * len(row)
+            
+            # Apply styling
+            styled_pharm_df = pharm_df.style.apply(color_pharm_rows, axis=1)
+            
+            # Display the styled dataframe
+            st.dataframe(styled_pharm_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No pharmacy licenses tracked yet. Add your first license above.")
 
 # --- PAGE: Data Explorer ---
 if current_page == "Data Explorer":

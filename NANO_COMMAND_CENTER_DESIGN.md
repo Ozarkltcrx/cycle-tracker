@@ -1,51 +1,25 @@
-## Command Center Design Vision
+# NANO_COMMAND_CENTER_DESIGN.md
 
-### Visual Identity
-- **Color Palette**: 
-  - Primary: Deep navy (#0A2540) for authority
-  - Accent: Vivid teal (#00C9A7) for highlights
-  - Background: Off-white (#F5F7FA) for readability
-  - Error: Coral red (#FF6B6B) with 90% opacity
-- **Typography**: 
-  - Headings: Montserrat Semi-Bold (24px+)
-  - Body: Open Sans Regular (16px base)
-  - Code: Fira Code Retina (14px)
-- **Grid System**: 12-column responsive layout with 24px gutters
+## Visual Identity
+- **Primary Color Palette**: #2563eb (blue), #059669 (green), #dc2626 (red), #f8fbff (light blue)
+- **Accent Colors**: #e0e7ff (soft blue), #f3f4f6 (gray)
+- **Typography**: Inter (sans-serif), 16px base font size
+- **Spacing**: 16px grid system for layout consistency
 
-### UX Enhancements
-1. **Intuitive Navigation**:
-   - Bottom tab bar with icons (Dashboard, Alerts, Inventory, Reports)
-   - Contextual menus on long-press
-2. **Customizable Widgets**:
-   - Drag-and-drop interface for dashboard modules
-   - Prebuilt templates for LTC-specific metrics
-3. **Accessibility**:
-   - High contrast mode (invert colors + 200% contrast ratio)
-   - Voice command support for critical functions
+## UX Enhancements
+- **Dashboard Layout**: Grid-based 3-column layout for metrics/cards
+- **Visual Hierarchy**: Bold headings (24px), subheadings (20px), body text (16px)
+- **Consistency**: Uniform card styling (rounded corners, shadow, padding)
+- **Interactive Elements**: Hover states for buttons/cards, clear call-to-action buttons
 
-### New Functionality
-- **Smart Alerts**:
-  - Medication refill reminders with dosage visualization
-  - Auto-detection of prescription conflicts
-- **Pharmacy Insights**:
-  - Real-time inventory tracking with low-stock alerts
-  - Patient medication history timelines
-- **Integration Hub**:
-  - EHR system sync (HIPAA-compliant)
-  - Automated insurance claim status tracking
+## New Features
+### Pharmacy Management Page
+- **Facility Directory**: Table with columns: Name, Schedule, Contact Info, Status (color-coded)
+- **Extensible Design**: Container-based layout with st.columns for future sections
+- **Internal Wiki**: Markdown sections for documentation with st.markdown
 
-### Modern Dashboard Aesthetics
-- **Card-Based Layout**: 
-  - Shadow depth: 8px soft drop
-  - Border radius: 12px for rounded corners
-- **Data Visualization**: 
-  - Animated line charts (D3.js)
-  - Heatmaps for medication distribution
-- **Dark Mode**: 
-  - Enabled by default at night (19:00-7:00)
-  - Automatic brightness adjustment based on ambient light
-
-## Implementation Notes
-- Use Figma for prototyping
-- Follow Material Design 3 guidelines
-- Conduct usability testing with LTC pharmacists
+## Dashboard Aesthetics
+- **Cards**: .hero-card class with white background, subtle shadow, and padding
+- **Buttons**: Primary buttons use #2563eb with white text, secondary buttons use #e0e7ff
+- **Progress Bars**: Custom-styled with blue gradients matching primary color
+- **Typography**: Consistent use of font weights and sizes across all components

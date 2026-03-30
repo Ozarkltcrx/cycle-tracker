@@ -460,6 +460,55 @@ def save_cubex_restock(entries: list[dict]) -> None:
     CUBEX_FILE.write_text(json.dumps(entries, indent=2))
 
 
+# ── Pharmacy Licenses Tracking ──────────────────────────────────────────────
+
+PHARMACY_LICENSES_FILE = DATA_DIR / "pharmacy_licenses.json"
+
+def load_pharmacy_licenses() -> list[dict]:
+    """Load pharmacy licenses data.
+    
+    Each entry has:
+    - facility: str
+    - license_number: str
+    - license_date: str (YYYY-MM-DD)
+    - expiration: str (YYYY-MM-DD)
+    """
+    default = []
+    if _USE_SUPABASE:
+        try:
+            resp = _supabase_client.table("tracking_state").select("value").eq("key", "pharmacy_licenses").execute()
+            if resp.data:
+                return resp.data[0]["value"]
+        except Exception:
+            pass
+        return default
+    
+    # Fallback: local JSON
+    if PHARMACY_LICENSES_FILE.exists():
+        try:
+            return json.loads(PHARMACY_LICENSES_FILE.read_text())
+        except Exception:
+            pass
+    return default
+
+
+def save_pharmacy_licenses(licenses: list[dict]) -> None:
+    """Save pharmacy licenses data."""
+    if _USE_SUPABASE:
+        try:
+            _supabase_client.table("tracking_state").upsert(
+                {"key": "pharmacy_licenses", "value": licenses},
+                on_conflict="key",
+            ).execute()
+            return
+        except Exception:
+            pass
+    
+    # Fallback: local JSON
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PHARMACY_LICENSES_FILE.write_text(json.dumps(licenses, indent=2))
+
+
 def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com") -> str:
     """Export current week's bag counts (Mon-Fri only) to CSV, email it, and reset for new week.
     
