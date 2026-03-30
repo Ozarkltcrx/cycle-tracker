@@ -1904,8 +1904,9 @@ if current_page == "Pharmacy Management":
                 with col1:
                     new_name = st.text_input("Facility Name", placeholder="e.g., Sunrise Manor")
                     new_start = st.date_input("Contract Start Date")
-                with col2:
                     new_original = st.number_input("Original Term (years)", min_value=1, max_value=10, value=3)
+                with col2:
+                    new_address = st.text_input("Address", placeholder="e.g., 123 Main St, Springfield, MO 65801")
                     new_renewal = st.number_input("Renewal Term (years)", min_value=1, max_value=10, value=1)
                 
                 if st.form_submit_button("➕ Add Facility", use_container_width=True):
@@ -1916,6 +1917,7 @@ if current_page == "Pharmacy Management":
                         else:
                             master_facs.append({
                                 "name": new_name.strip(),
+                                "address": new_address.strip(),
                                 "start_date": new_start.strftime("%Y-%m-%d"),
                                 "original_term": new_original,
                                 "renewal_term": new_renewal,
@@ -1940,6 +1942,7 @@ if current_page == "Pharmacy Management":
                 )
                 display_rows.append({
                     "Facility": fac["name"],
+                    "Address": fac.get("address", "—"),
                     "Start Date": fac.get("start_date", "N/A"),
                     "Original Term": f"{fac.get('original_term', 'N/A')} yr",
                     "Renewal Term": f"{fac.get('renewal_term', 'N/A')} yr",
@@ -1956,6 +1959,12 @@ if current_page == "Pharmacy Management":
                     # Find actual index in master_facs for editing
                     actual_idx = next(j for j, f in enumerate(master_facs) if f["name"] == fac["name"])
                     with st.expander(f"**{fac['name']}**"):
+                        edit_address = st.text_input(
+                            "Address",
+                            value=fac.get("address", ""),
+                            placeholder="e.g., 123 Main St, Springfield, MO 65801",
+                            key=f"edit_addr_{fac['name']}"
+                        )
                         edit_col1, edit_col2, edit_col3 = st.columns([2, 2, 1])
                         with edit_col1:
                             edit_start = st.date_input(
@@ -1977,6 +1986,7 @@ if current_page == "Pharmacy Management":
                                 key=f"edit_renew_{fac['name']}"
                             )
                             if st.button("💾 Save Changes", key=f"save_{fac['name']}", use_container_width=True):
+                                master_facs[actual_idx]["address"] = edit_address.strip()
                                 master_facs[actual_idx]["start_date"] = edit_start.strftime("%Y-%m-%d")
                                 master_facs[actual_idx]["original_term"] = edit_original
                                 master_facs[actual_idx]["renewal_term"] = edit_renewal
@@ -1998,8 +2008,31 @@ if current_page == "Pharmacy Management":
         st.markdown("### 🚚 Delivery Routes")
         st.caption("Manage delivery routes by time of day.")
         
-        # Get facility names for multiselect
+        # Get facility names for multiselect and build address lookup
         facility_names = sorted([f["name"] for f in master_facs])
+        facility_addresses = {f["name"]: f.get("address", "") for f in master_facs}
+        
+        # Pharmacy starting address (can be configured)
+        PHARMACY_ADDRESS = "1245 E. Republic Rd, Springfield, MO 65807"
+        
+        def get_google_maps_route_url(facilities_list: list[str]) -> str:
+            """Generate Google Maps directions URL for a route."""
+            addresses = []
+            for fac_name in facilities_list:
+                addr = facility_addresses.get(fac_name, "")
+                if addr:
+                    addresses.append(addr)
+            
+            if not addresses:
+                return None
+            
+            # Google Maps directions: origin -> waypoints -> destination (loop back)
+            import urllib.parse
+            origin = urllib.parse.quote(PHARMACY_ADDRESS)
+            destination = urllib.parse.quote(PHARMACY_ADDRESS)  # Return to pharmacy
+            waypoints = "|".join([urllib.parse.quote(addr) for addr in addresses])
+            
+            return f"https://www.google.com/maps/dir/?api=1&origin={origin}&destination={destination}&waypoints={waypoints}&travelmode=driving"
         
         # Sub-tabs for AM, PM, Weekend
         route_tab1, route_tab2, route_tab3 = st.tabs(["🌅 AM Routes", "🌆 PM Routes", "📅 Weekend Routes"])
@@ -2008,6 +2041,9 @@ if current_page == "Pharmacy Management":
             """Render a route management section for a given route type."""
             with tab_container:
                 routes = delivery_routes.get(route_type, [])
+                
+                # Sort routes by departure time
+                sorted_routes = sorted(routes, key=lambda r: r.get("departure_time", "99:99"))
                 
                 # Add New Route
                 with st.expander(f"➕ Add New {route_type} Route", expanded=False):
@@ -2019,7 +2055,7 @@ if current_page == "Pharmacy Management":
                             new_departure = st.time_input("Departure Time", key=f"new_departure_{route_type}")
                         
                         new_facilities = st.multiselect(
-                            "Select Facilities on Route",
+                            "Select Facilities on Route (in delivery order)",
                             options=facility_names,
                             key=f"new_facilities_{route_type}"
                         )
@@ -2040,17 +2076,32 @@ if current_page == "Pharmacy Management":
                             else:
                                 st.warning("Please enter a route name")
                 
-                # Display existing routes
-                if routes:
-                    st.markdown(f"**{len(routes)} {route_type} route(s)**")
+                # Display existing routes (sorted by departure time)
+                if sorted_routes:
+                    st.markdown(f"**{len(sorted_routes)} {route_type} route(s)** (sorted by departure time)")
                     
-                    for i, route in enumerate(routes):
-                        with st.expander(f"**{route['name']}** — Departs {route.get('departure_time', 'N/A')}"):
-                            # Show facilities on route
-                            st.markdown("**Facilities on this route:**")
+                    for route in sorted_routes:
+                        # Find original index for editing
+                        i = next(idx for idx, r in enumerate(routes) if r["name"] == route["name"])
+                        
+                        with st.expander(f"🕐 **{route.get('departure_time', 'N/A')}** — {route['name']}"):
+                            # Show facilities on route with addresses
+                            st.markdown("**Stops (in order):**")
                             if route.get("facilities"):
-                                for fac in route["facilities"]:
-                                    st.write(f"  • {fac}")
+                                for stop_num, fac in enumerate(route["facilities"], 1):
+                                    addr = facility_addresses.get(fac, "")
+                                    if addr:
+                                        st.write(f"  {stop_num}. **{fac}** — {addr}")
+                                    else:
+                                        st.write(f"  {stop_num}. **{fac}** — ⚠️ No address")
+                                
+                                # Google Maps route button
+                                maps_url = get_google_maps_route_url(route["facilities"])
+                                if maps_url:
+                                    st.markdown(f"[🗺️ **Open Route in Google Maps**]({maps_url})")
+                                    st.caption("Google Maps will calculate miles and drive time for the fastest route.")
+                                else:
+                                    st.warning("Add addresses to facilities to enable route mapping.")
                             else:
                                 st.write("  (No facilities assigned)")
                             
@@ -2068,7 +2119,7 @@ if current_page == "Pharmacy Management":
                                 edit_departure = st.time_input("Departure Time", value=current_time, key=f"edit_dep_{route_type}_{i}")
                             
                             edit_facilities = st.multiselect(
-                                "Facilities on Route",
+                                "Facilities on Route (drag to reorder in delivery order)",
                                 options=facility_names,
                                 default=route.get("facilities", []),
                                 key=f"edit_facs_{route_type}_{i}"
