@@ -79,31 +79,119 @@ SHARED_STATE_FILE = DATA_DIR / "shared_tracking_state.json"
 
 
 def get_current_week_key() -> str:
-    """Return a unique key for the current week (e.g., '2026-W13')."""
+    """Return a unique key for the current week (e.g., '2026-W14').
+    
+    Uses ISO week numbering where Monday is day 1.
+    """
     today = datetime.now()
     return today.strftime("%G-W%V")
+
+
+def get_workflow_week_key(day_abbr: str) -> str:
+    """Return the week key for a given workflow day.
+    
+    If today is after Friday and we're entering data for Mon-Fri,
+    that data belongs to NEXT week's workflow.
+    """
+    today = datetime.now()
+    today_weekday = today.weekday()  # 0=Mon, 6=Sun
+    
+    day_index = DAY_ABBR_ORDER.index(day_abbr) if day_abbr in DAY_ABBR_ORDER else 0
+    
+    # If it's Saturday (5) or Sunday (6) and we're entering Mon-Fri data,
+    # it's for next week
+    if today_weekday >= 5:
+        # Weekend - any Mon-Fri entry is for next week
+        next_monday = today + timedelta(days=(7 - today_weekday))
+        return next_monday.strftime("%G-W%V")
+    
+    # If today is a weekday and we're entering data for a FUTURE day this week,
+    # it might be "early prep" for this week OR next week depending on context
+    # But generally, if entering Fri data on Mon, it's still this week
+    # Only if we're past Friday would next week data be entered
+    
+    return today.strftime("%G-W%V")
+
+
+def should_export_data(workflow_week_key: str) -> bool:
+    """Check if data for a given workflow week should be exported.
+    
+    Data is exported on Sunday night following the workflow week.
+    Returns True if current time is past Sunday 7pm of the workflow week.
+    """
+    today = datetime.now()
+    current_week = get_current_week_key()
+    
+    # Parse the workflow week
+    # Week key format: "2026-W14"
+    if workflow_week_key < current_week:
+        # Past week - should have been exported already
+        return True
+    elif workflow_week_key == current_week:
+        # Current week - export on Sunday night
+        if today.weekday() == 6 and today.hour >= 19:  # Sunday 7pm+
+            return True
+    
+    return False
 
 
 def load_shared_state() -> dict:
     """Load shared tracking state (Supabase or local JSON fallback).
     
-    Automatically resets tracking data when a new week starts.
+    Data persists until the Sunday export following the WORKFLOW date.
+    - Mon-Fri data entered during the week stays until Sunday night export
+    - Next week's data (entered early on Fri/weekend) stays until the NEXT Sunday
+    
+    The export_week_key tracks which week's export has been completed.
+    Data for week W stays until Sunday of week W is processed.
     """
     state = supa.load_tracking_state()
     current_week = get_current_week_key()
+    today = datetime.now()
     
-    # Check if we're in a new week
-    if state.get("week_key") != current_week:
-        # New week - reset tracking data but keep config
-        state = {
-            "cycle_team_tracking": {},
-            "dollar_tracking": {},
-            "unlocked_days": [],
-            "dollar_unlocked_days": [],
-            "week_key": current_week,
-        }
-        # Save the reset state
+    # Initialize if missing keys
+    if "export_week_key" not in state:
+        state["export_week_key"] = ""
+    if "current_week_data" not in state:
+        state["current_week_data"] = {}
+    if "next_week_data" not in state:
+        state["next_week_data"] = {}
+    
+    # Check if we need to roll over weeks (Sunday export happened)
+    stored_week = state.get("week_key", "")
+    
+    if stored_week and stored_week != current_week:
+        # Week changed - check if we should roll data
+        # Move next_week_data to current_week_data
+        if state.get("next_week_data"):
+            # Preserve next week's pre-entered data as current week
+            state["cycle_team_tracking"] = state.get("next_week_data", {}).get("cycle_team_tracking", {})
+            state["dollar_tracking"] = state.get("next_week_data", {}).get("dollar_tracking", {})
+        else:
+            # No pre-entered data, start fresh
+            state["cycle_team_tracking"] = {}
+            state["dollar_tracking"] = {}
+        
+        # Clear next week data and unlocked days
+        state["next_week_data"] = {}
+        state["unlocked_days"] = []
+        state["dollar_unlocked_days"] = []
+        state["week_key"] = current_week
+        
+        # Save the rolled-over state
         supa.save_tracking_state(state)
+    
+    # Ensure we have the basic structure
+    if "cycle_team_tracking" not in state:
+        state["cycle_team_tracking"] = {}
+    if "dollar_tracking" not in state:
+        state["dollar_tracking"] = {}
+    if "unlocked_days" not in state:
+        state["unlocked_days"] = []
+    if "dollar_unlocked_days" not in state:
+        state["dollar_unlocked_days"] = []
+    if "week_key" not in state:
+        state["week_key"] = current_week
     
     return state
 
