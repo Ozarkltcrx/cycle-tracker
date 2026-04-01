@@ -54,11 +54,18 @@ CYCLE_MANUAL_STAGES = [
 # $$ Tracking stages (subset for cycle fill billing)
 CYCLE_DOLLAR_STAGE_ORDER = [
     "Exported",
-    "Through machine",
     "Through Perl",
     "Back Checked",
     "Toted",
-    "Facility Complete",
+    "Facility Complete",  # Auto-completes when all other steps are done
+]
+
+# Manual $$ stages (excludes Facility Complete which auto-completes)
+DOLLAR_MANUAL_STAGES = [
+    "Exported",
+    "Through Perl",
+    "Back Checked",
+    "Toted",
 ]
 
 CYCLE_TEAM_SCHEDULE = {
@@ -71,7 +78,8 @@ CYCLE_TEAM_SCHEDULE = {
 
 # Labels for manual stages only (Facility finished is auto)
 CYCLE_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(CYCLE_MANUAL_STAGES)}
-CYCLE_DOLLAR_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(CYCLE_DOLLAR_STAGE_ORDER)}
+# Labels for manual $$ stages only (Facility Complete is auto)
+CYCLE_DOLLAR_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(DOLLAR_MANUAL_STAGES)}
 
 # Frequency options for facilities
 FREQUENCY_OPTIONS = ["Weekly", "Every 2 weeks", "Every 4 weeks"]
@@ -752,6 +760,14 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
                 st.rerun()
         return
     
+    # Check if all manual stages are complete - if so, auto-complete "Facility Complete"
+    manual_complete = all(stage_map.get(s, "") for s in DOLLAR_MANUAL_STAGES)
+    if manual_complete and not stage_map.get("Facility Complete", ""):
+        stage_map["Facility Complete"] = "AUTO"
+        st.session_state.dollar_tracking[day][facility]["Facility Complete"] = "AUTO"
+        log_stage_to_excel(f"{facility} $$", "Facility Complete", "AUTO")
+        save_session_to_shared()
+    
     completed, total = stage_counts(stage_map, CYCLE_DOLLAR_STAGE_ORDER)
     progress_pct = completed / total if total > 0 else 0
     status = cycle_status_label(stage_map, CYCLE_DOLLAR_STAGE_ORDER)
@@ -773,7 +789,7 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
         initials_summary = ", ".join(
             f"{stage}: {initials}"
             for stage, initials in stage_map.items()
-            if initials and not stage.startswith("_")
+            if initials and not stage.startswith("_") and stage != "Facility Complete"
         )
         
         progress_col, summary_col = st.columns([1.25, 1])
@@ -781,7 +797,7 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
             st.progress(progress_pct, text=f"{pct_display}% complete")
         with summary_col:
             if status == "Completed":
-                st.success(f"{DOLLAR_DISPLAY} Complete!")
+                st.success(f"✅ {DOLLAR_DISPLAY} Complete!")
             elif status == "Not Started":
                 st.caption("No stages marked yet.")
             else:
@@ -789,12 +805,13 @@ def render_dollar_facility(day: str, facility: str, stage_map: dict[str, str]) -
             if initials_summary:
                 st.caption(f"By: {initials_summary}")
 
-        stage_cols = st.columns(3)
-        for idx, stage in enumerate(CYCLE_DOLLAR_STAGE_ORDER):
+        # Only show manual stages (not "Facility Complete")
+        stage_cols = st.columns(2)  # 4 stages fits better in 2 columns
+        for idx, stage in enumerate(DOLLAR_MANUAL_STAGES):
             initials_key = f"dollar_initials::{day}::{facility}::{stage}"
             form_key = f"dollar_form::{day}::{facility}::{stage}"
             completed_initials = stage_map.get(stage, "")
-            with stage_cols[idx % 3]:
+            with stage_cols[idx % 2]:
                 if completed_initials:
                     st.success(f"{CYCLE_DOLLAR_STAGE_LABELS[stage]}\n\n✓ {completed_initials}")
                 else:
