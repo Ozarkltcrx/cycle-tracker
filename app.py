@@ -1551,78 +1551,12 @@ if current_page == "Cycle Team":
         week_dates = get_week_dates()
         today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
         
-        # Determine visible days (entire week Mon-Fri unless marked complete + unlocked future)
-        def get_visible_days_bag():
-            if today_abbr not in DAY_ABBR_ORDER:
-                return DAY_ABBR_ORDER
-            visible = []
-            completed = st.session_state.bag_completed_days
-            for i, d in enumerate(DAY_ABBR_ORDER):
-                # Show all days Mon-Fri unless marked complete
-                if d not in completed:
-                    visible.append(d)
-            return visible
+        # Show ALL days Mon-Fri until Sunday export (same logic as cycle/dollar tracking)
+        # Data persists until export following the workflow date, not entry date
+        visible_days = DAY_ABBR_ORDER.copy()  # Always show Mon-Fri until Sunday export
         
-        visible_days = get_visible_days_bag()
-        for unlocked in st.session_state.bag_unlocked_days:
-            if unlocked not in visible_days and unlocked in DAY_ABBR_ORDER:
-                visible_days.append(unlocked)
-        visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
-        
-        future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
-        next_unlockable = next((fd for fd in future_days if fd not in st.session_state.bag_unlocked_days), None)
-        
-        # Day Complete / Lock/Unlock buttons
-        st.markdown("#### Day Controls")
-        btn_cols = st.columns(5)
-        col_idx = 0
-        
-        # Show "Day Complete" buttons for today and past days that are visible
-        completable_days = [d for d in visible_days if DAY_ABBR_ORDER.index(d) <= today_idx]
-        for day in completable_days:
-            if col_idx < 5:
-                with btn_cols[col_idx]:
-                    if st.button(f"✅ {day} ({week_dates.get(day, '')}) Complete", key=f"bag_complete_{day}", use_container_width=True):
-                        if day not in st.session_state.bag_completed_days:
-                            st.session_state.bag_completed_days.append(day)
-                        supa.save_bag_count_state({
-                            "batches": st.session_state.bag_batches,
-                            "counts": st.session_state.bag_counts,
-                            "unlocked_days": st.session_state.bag_unlocked_days,
-                            "completed_days": st.session_state.bag_completed_days,
-                        })
-                        st.rerun()
-                col_idx += 1
-        
-        # Show unlock button for future days
-        if next_unlockable and col_idx < 5:
-            with btn_cols[col_idx]:
-                if st.button(f"🔓 Unlock {next_unlockable} ({week_dates.get(next_unlockable, '')})", key=f"bag_unlock_{next_unlockable}", use_container_width=True):
-                    st.session_state.bag_unlocked_days.append(next_unlockable)
-                    supa.save_bag_count_state({
-                        "batches": st.session_state.bag_batches,
-                        "counts": st.session_state.bag_counts,
-                        "unlocked_days": st.session_state.bag_unlocked_days,
-                        "completed_days": st.session_state.bag_completed_days,
-                    })
-                    st.rerun()
-                col_idx += 1
-        
-        # Show lock buttons for unlocked future days
-        for unlocked in st.session_state.bag_unlocked_days:
-            if col_idx < 5:
-                with btn_cols[col_idx]:
-                    if st.button(f"🔒 Lock {unlocked}", key=f"bag_relock_{unlocked}", use_container_width=True):
-                        st.session_state.bag_unlocked_days.remove(unlocked)
-                        st.session_state.bag_unlocked_days = [d for d in st.session_state.bag_unlocked_days if DAY_ABBR_ORDER.index(d) < DAY_ABBR_ORDER.index(unlocked)]
-                        supa.save_bag_count_state({
-                            "batches": st.session_state.bag_batches,
-                            "counts": st.session_state.bag_counts,
-                            "unlocked_days": st.session_state.bag_unlocked_days,
-                            "completed_days": st.session_state.bag_completed_days,
-                        })
-                        st.rerun()
-                col_idx += 1
+        # No lock/unlock needed - all days always visible
+        # Data persists until Sunday export following the workflow date
         
         # Manual save button (in case auto-save failed)
         save_col1, save_col2 = st.columns([1, 3])
