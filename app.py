@@ -1740,61 +1740,69 @@ if current_page == "Cycle Team":
                             if not batches:
                                 st.warning(f"No batches defined for {facility}. Add batches in 'Manage Batches' above.")
                             else:
-                                # Column headers
-                                hdr1, hdr2, hdr3 = st.columns([2, 1, 1])
-                                with hdr1:
-                                    st.caption("Batch")
-                                with hdr2:
-                                    st.caption("Bags")
-                                with hdr3:
-                                    st.caption("Census")
-                                
-                                # Create a grid for batch entry
-                                for batch in batches:
-                                    batch_id = batch['id']
-                                    batch_name = batch['name']
+                                # Use a form to batch all inputs - only saves on submit
+                                with st.form(key=f"bag_form_{day}_{facility}", clear_on_submit=False):
+                                    # Column headers
+                                    hdr1, hdr2, hdr3 = st.columns([2, 1, 1])
+                                    with hdr1:
+                                        st.caption("Batch")
+                                    with hdr2:
+                                        st.caption("Bags")
+                                    with hdr3:
+                                        st.caption("Census")
                                     
-                                    if batch_id not in fac_counts:
-                                        fac_counts[batch_id] = {'bags': None, 'census': None}
+                                    # Collect all batch inputs
+                                    batch_inputs = {}
+                                    for batch in batches:
+                                        batch_id = batch['id']
+                                        batch_name = batch['name']
+                                        
+                                        if batch_id not in fac_counts:
+                                            fac_counts[batch_id] = {'bags': None, 'census': None}
+                                        
+                                        col1, col2, col3 = st.columns([2, 1, 1])
+                                        with col1:
+                                            st.markdown(f"**{batch_name}**")
+                                        with col2:
+                                            batch_inputs[f"{batch_id}_bags"] = st.number_input(
+                                                "Bags",
+                                                min_value=0,
+                                                value=fac_counts[batch_id].get('bags') or 0,
+                                                key=f"bags_{day}_{facility}_{batch_id}",
+                                                label_visibility="collapsed"
+                                            )
+                                        with col3:
+                                            batch_inputs[f"{batch_id}_census"] = st.number_input(
+                                                "Census",
+                                                min_value=0,
+                                                value=fac_counts[batch_id].get('census') or 0,
+                                                key=f"census_{day}_{facility}_{batch_id}",
+                                                label_visibility="collapsed"
+                                            )
                                     
-                                    col1, col2, col3 = st.columns([2, 1, 1])
-                                    with col1:
-                                        st.markdown(f"**{batch_name}**")
-                                    with col2:
-                                        new_bags = st.number_input(
-                                            "Bags",
-                                            min_value=0,
-                                            value=fac_counts[batch_id].get('bags') or 0,
-                                            key=f"bags_{day}_{facility}_{batch_id}",
-                                            label_visibility="collapsed"
-                                        )
-                                        if new_bags != fac_counts[batch_id].get('bags'):
-                                            fac_counts[batch_id]['bags'] = new_bags
-                                            supa.save_bag_count_state({
-                                                "batches": st.session_state.bag_batches,
-                                                "counts": st.session_state.bag_counts,
-                                                "unlocked_days": st.session_state.bag_unlocked_days,
-                                                "completed_days": st.session_state.bag_completed_days,
-                                            })
-                                    with col3:
-                                        new_census = st.number_input(
-                                            "Census",
-                                            min_value=0,
-                                            value=fac_counts[batch_id].get('census') or 0,
-                                            key=f"census_{day}_{facility}_{batch_id}",
-                                            label_visibility="collapsed"
-                                        )
-                                        if new_census != fac_counts[batch_id].get('census'):
-                                            fac_counts[batch_id]['census'] = new_census
-                                            supa.save_bag_count_state({
-                                                "batches": st.session_state.bag_batches,
-                                                "counts": st.session_state.bag_counts,
-                                                "unlocked_days": st.session_state.bag_unlocked_days,
-                                                "completed_days": st.session_state.bag_completed_days,
-                                            })
+                                    # Single save button for all batches in this facility
+                                    submitted = st.form_submit_button("💾 Save", use_container_width=True)
+                                    if submitted:
+                                        # Update all batch counts at once
+                                        for batch in batches:
+                                            batch_id = batch['id']
+                                            fac_counts[batch_id] = {
+                                                'bags': batch_inputs.get(f"{batch_id}_bags", 0),
+                                                'census': batch_inputs.get(f"{batch_id}_census", 0),
+                                            }
+                                        # Single save to Supabase
+                                        supa.save_bag_count_state({
+                                            "batches": st.session_state.bag_batches,
+                                            "counts": st.session_state.bag_counts,
+                                            "unlocked_days": st.session_state.bag_unlocked_days,
+                                            "completed_days": st.session_state.bag_completed_days,
+                                        })
+                                        st.success("✓ Saved!")
                                 
-                                # Show facility totals
-                                st.markdown(f"**Total: {fac_total_bags} bags, {fac_total_census} census**")
+                                # Show facility totals (recalculate after potential save)
+                                updated_bags = sum(fac_counts.get(b['id'], {}).get('bags', 0) or 0 for b in batches)
+                                updated_census = sum(fac_counts.get(b['id'], {}).get('census', 0) or 0 for b in batches)
+                                st.markdown(f"**Total: {updated_bags} bags, {updated_census} census**")
                     
                     # Day summary
                     st.divider()
