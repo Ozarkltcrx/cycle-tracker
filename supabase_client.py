@@ -732,6 +732,20 @@ def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset
     filepath = APP_DIR / "data" / filename
     template_path = APP_DIR / "data" / "template_bag_count.xlsx"
     
+    # Calculate dates for each day of the week
+    # Find Monday of this week
+    days_since_monday = today.weekday()
+    monday = today - timedelta(days=days_since_monday)
+    
+    # Date cells (next to day names in row 2)
+    DATE_CELLS = {
+        "Mon": ("C2", monday.strftime("%m/%d")),
+        "Tue": ("G2", (monday + timedelta(days=1)).strftime("%m/%d")),
+        "Wed": ("K2", (monday + timedelta(days=2)).strftime("%m/%d")),
+        "Thu": ("O2", (monday + timedelta(days=3)).strftime("%m/%d")),
+        "Fri": ("S2", (monday + timedelta(days=4)).strftime("%m/%d")),
+    }
+    
     # Build value updates for each sheet
     def get_values(value_key: str) -> dict:
         """Get cell->value mapping for census or bags."""
@@ -765,6 +779,10 @@ def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset
         for day, cell_ref in DAILY_TOTAL_CELLS.items():
             if day_totals[day] > 0:
                 updates[cell_ref] = day_totals[day]
+        
+        # Add dates next to day names
+        for day, (cell_ref, date_str) in DATE_CELLS.items():
+            updates[cell_ref] = date_str
         
         return updates, sum(day_totals.values())
     
@@ -819,9 +837,16 @@ def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset
                 if child.tag.endswith('}v') or child.tag.endswith('}is'):
                     cell_elem.remove(child)
             
-            # Add new value
-            v_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v')
-            v_elem.text = str(value)
+            # Add new value - handle text vs numbers
+            if isinstance(value, (int, float)):
+                v_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v')
+                v_elem.text = str(value)
+            else:
+                # Text value - use inline string
+                cell_elem.set('t', 'inlineStr')
+                is_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is')
+                t_elem = ET.SubElement(is_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
+                t_elem.text = str(value)
         
         # Write back
         updated_xml = ET.tostring(root, encoding='unicode')
