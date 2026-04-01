@@ -795,74 +795,71 @@ def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset
     # Copy template and update values
     shutil.copy(template_path, filepath)
     
-    # Update the xlsx file in place
-    def update_sheet_values(zf_path, sheet_name, updates):
-        """Update cell values in a sheet while preserving formatting."""
+    # Update the xlsx file - both sheets at once
+    def update_xlsx_sheets(zf_path, sheet1_updates, sheet2_updates):
+        """Update cell values in both sheets while preserving formatting."""
         from xml.etree import ElementTree as ET
-        
-        sheet_file = "xl/worksheets/sheet1.xml" if sheet_name == "census" else "xl/worksheets/sheet2.xml"
         
         # Read existing xlsx
         with ZipFile(zf_path, 'r') as zf:
-            sheet_xml = zf.read(sheet_file).decode('utf-8')
             all_files = {name: zf.read(name) for name in zf.namelist()}
         
-        # Parse and update
         ns = {'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-        # Register namespace to avoid ns0 prefix
         ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
         ET.register_namespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+        ET.register_namespace('mc', 'http://schemas.openxmlformats.org/markup-compatibility/2006')
+        ET.register_namespace('x14ac', 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac')
         
-        root = ET.fromstring(sheet_xml)
-        sheet_data = root.find('.//main:sheetData', ns)
+        def update_sheet(sheet_xml, updates):
+            root = ET.fromstring(sheet_xml)
+            sheet_data = root.find('.//main:sheetData', ns)
+            
+            for cell_ref, value in updates.items():
+                col = ''.join(filter(str.isalpha, cell_ref))
+                row_num = ''.join(filter(str.isdigit, cell_ref))
+                
+                row_elem = sheet_data.find(f".//main:row[@r='{row_num}']", ns)
+                if row_elem is None:
+                    continue
+                
+                cell_elem = row_elem.find(f".//main:c[@r='{cell_ref}']", ns)
+                if cell_elem is None:
+                    cell_elem = ET.SubElement(row_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c')
+                    cell_elem.set('r', cell_ref)
+                
+                # Remove existing value/type
+                cell_elem.attrib.pop('t', None)
+                for child in list(cell_elem):
+                    if child.tag.endswith('}v') or child.tag.endswith('}is'):
+                        cell_elem.remove(child)
+                
+                # Add new value
+                if isinstance(value, (int, float)):
+                    v_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v')
+                    v_elem.text = str(value)
+                else:
+                    cell_elem.set('t', 'inlineStr')
+                    is_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is')
+                    t_elem = ET.SubElement(is_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
+                    t_elem.text = str(value)
+            
+            return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(root, encoding='unicode')
         
-        for cell_ref, value in updates.items():
-            # Find or create the cell
-            col = ''.join(filter(str.isalpha, cell_ref))
-            row_num = ''.join(filter(str.isdigit, cell_ref))
-            
-            row_elem = sheet_data.find(f".//main:row[@r='{row_num}']", ns)
-            if row_elem is None:
-                continue
-            
-            cell_elem = row_elem.find(f".//main:c[@r='{cell_ref}']", ns)
-            if cell_elem is None:
-                # Create new cell element
-                cell_elem = ET.SubElement(row_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c')
-                cell_elem.set('r', cell_ref)
-            
-            # Remove any existing value or type
-            cell_elem.attrib.pop('t', None)
-            for child in list(cell_elem):
-                if child.tag.endswith('}v') or child.tag.endswith('}is'):
-                    cell_elem.remove(child)
-            
-            # Add new value - handle text vs numbers
-            if isinstance(value, (int, float)):
-                v_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v')
-                v_elem.text = str(value)
-            else:
-                # Text value - use inline string
-                cell_elem.set('t', 'inlineStr')
-                is_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}is')
-                t_elem = ET.SubElement(is_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t')
-                t_elem.text = str(value)
+        # Update both sheets
+        all_files['xl/worksheets/sheet1.xml'] = update_sheet(
+            all_files['xl/worksheets/sheet1.xml'].decode('utf-8'), sheet1_updates
+        ).encode('utf-8')
+        all_files['xl/worksheets/sheet2.xml'] = update_sheet(
+            all_files['xl/worksheets/sheet2.xml'].decode('utf-8'), sheet2_updates
+        ).encode('utf-8')
         
         # Write back
-        updated_xml = ET.tostring(root, encoding='unicode')
-        # Add XML declaration
-        updated_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + updated_xml
-        
-        all_files[sheet_file] = updated_xml.encode('utf-8')
-        
-        # Rewrite zip
         with ZipFile(zf_path, 'w', ZIP_DEFLATED) as zf:
             for name, content in all_files.items():
                 zf.writestr(name, content)
     
-    # Update both sheets
-    update_sheet_values(filepath, "census", census_updates)
-    update_sheet_values(filepath, "bags", bags_updates)
+    # Update both sheets at once
+    update_xlsx_sheets(filepath, census_updates, bags_updates)
     
     # Email the report
     subject = f"Weekly Bag Count Report - Week {week_num}, {year}"
