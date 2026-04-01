@@ -560,12 +560,10 @@ def save_delivery_routes(routes: dict) -> None:
 
 
 def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset: bool = True) -> str:
-    """Export current week's bag counts to Excel (matching template format) and email it.
+    """Export current week's bag counts to Excel using template with formatting preserved.
     
-    Format matches Cycle Bag Count Template with:
-    - Two sheets: "Cycle Census" and "Cycle Bag Count"
-    - Days as columns: Mon(B-D), Tue(F-H), Wed(J-L), Thu(N-P), Fri(R-T)
-    - Each day has: Facility | Batch | Value
+    Uses the template file (data/template_bag_count.xlsx) as base and fills in data values.
+    Preserves all borders, highlighting, and cell formatting from the template.
     
     Args:
         email_to: Email address to send the report to.
@@ -574,9 +572,11 @@ def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset
     Returns: Status message.
     """
     import subprocess
+    import shutil
     from datetime import datetime
     from zipfile import ZIP_DEFLATED, ZipFile
     import urllib.request
+    import re
     
     # Load directly from Supabase to avoid module-level init issues
     _url = os.environ.get("SUPABASE_URL", "")
@@ -600,63 +600,129 @@ def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset
     counts = state.get("counts", {})
     batches_config = state.get("batches", {})
     
-    # Facility order by day with display names (matching template)
-    FACILITY_CONFIG = {
-        "Mon": [
-            ("Mother of Good Counsel", "MOGC", ["1st Floor", "2nd Floor", "3rd Floor"]),
-            ("McClay", "McClay", ["100 Hall", "L Hall"]),
-            ("Belleview", "Belleview", ["Hall A", "Hall B", "Unit"]),
-            ("Hillside", "Hillside", ["Hill 1", "Hill 2"]),
-            ("Superior Manor", "Superior Manor", ["Hall 100", "Hall 200", "Hall 300", "Hall 400"]),
-            ("Walnut Street", "Walnut", [""]),
-            ("Colonial Doniphan", "Colonial Doniphan", ["Upstairs", "Down"]),
-            ("New Hope", "New Hope", ["ALF", "ILF"]),
-        ],
-        "Tue": [
-            ("Westwood Hills", "Westwood", ["A Wing", "B Wing", "C Wing"]),
-            ("Glenfield", "Glenfield", ["100"]),
-            ("Granite House", "Granite House", [""]),
-            ("Creve Coeur", "Creve Coeur", ["1", "2"]),
-        ],
-        "Wed": [
-            ("Licking RCF", "Licking RCF", ["1"]),
-            ("Salem Care Center", "Salem", ["1", "2", "3", "RCF"]),
-            ("Salem Residential Care", "Salem", ["RCF"]),
-            ("Baisch SNF", "Baisch SNF", ["1", "2"]),
-            ("Baisch RCF", "Baisch RCF", ["RCF"]),
-            ("Pillars", "Pillars", ["1", "2"]),
-            ("Legacy", "Legacy", [""]),
-            ("John Knox ALF", "John Knox", ["ALF"]),
-            ("John Knox ILF", "John Knox", ["ILF 1", "ILF 2"]),
-            ("John Knox MM", "John Knox", ["MM"]),
-            ("John Knox CSL", "John Knox", ["CSL"]),
-        ],
-        "Thu": [
-            ("Delta South", "Delta", ["1", "2"]),
-            ("Seville", "Seville", [""]),
-            ("St Johns", "St Johns", ["1", "2"]),
-            ("UCity", "U-City", ["1", "2", "3", "4", "5"]),
-            ("Bentley's", "Bentley's", ["1"]),
-        ],
-        "Fri": [
-            ("Colonial Bismark", "Colonial", ["1"]),
-            ("Bertrand", "Bertrand", ["1", "2"]),
-            ("Oakdale SNF", "Oakdale SNF", ["1", "2"]),
-            ("Oakdale ALF", "Oakdale ALF", ["1", "2", "3"]),
-            ("Oakdale RCF", "Oakdale RCF", ["1", "2"]),
-        ],
+    # Cell mapping: Maps (facility_key, batch_name) -> value_cell_ref
+    # Based on template layout - value column is D for Mon, H for Tue, L for Wed, P for Thu, T for Fri
+    CELL_MAP = {
+        # Monday (value col D)
+        ("Mother of Good Counsel", "1st Floor"): "D4",
+        ("Mother of Good Counsel", "2nd Floor"): "D6",
+        ("Mother of Good Counsel", "3rd Floor"): "D7",
+        ("McClay", "100 Hall"): "D10",
+        ("McClay", "L Hall"): "D11",
+        ("Belleview", "Hall A"): "D14",
+        ("Belleview", "Hall B"): "D15",
+        ("Belleview", "Unit"): "D16",
+        ("Hillside", "Hill 1"): "D19",
+        ("Hillside", "Hill 2"): "D20",
+        ("Superior Manor", "Hall 100"): "D23",
+        ("Superior Manor", "Hall 200"): "D24",
+        ("Superior Manor", "Hall 300"): "D25",
+        ("Superior Manor", "Hall 400"): "D26",
+        ("Walnut Street", "1"): "D29",
+        ("Colonial Doniphan", "Upstairs"): "D31",
+        ("Colonial Doniphan", "Down"): "D32",
+        ("New Hope", "ALF"): "D35",
+        ("New Hope", "ILF"): "D36",
+        # Tuesday (value col H)
+        ("Westwood Hills", "A Wing"): "H4",
+        ("Westwood Hills", "B Wing"): "H5",
+        ("Westwood Hills", "C Wing"): "H6",
+        ("Glenfield", "100"): "H9",
+        ("Granite House", "1"): "H12",
+        ("Creve Coeur", "1"): "H14",
+        ("Creve Coeur", "2"): "H15",
+        # Wednesday (value col L)
+        ("Licking RCF", "1"): "L4",
+        ("Salem Care Center", "1"): "L6",
+        ("Salem Care Center", "2"): "L7",
+        ("Salem Care Center", "3"): "L8",
+        ("Salem Residential Care", "RCF"): "L10",
+        ("Baisch SNF", "1"): "L12",
+        ("Baisch SNF", "2"): "L13",
+        ("Baisch RCF", "RCF"): "L14",
+        ("Pillars", "1"): "L17",
+        ("Pillars", "2"): "L19",
+        ("Legacy", "1"): "L23",
+        ("John Knox CSL", "CSL"): "L25",
+        ("John Knox MM", "MM"): "L26",
+        ("John Knox ALF", "ALF"): "L27",
+        ("John Knox ILF", "ILF 1"): "L28",
+        ("John Knox ILF", "ILF 2"): "L29",
+        # Thursday (value col P)
+        ("Delta South", "1"): "P4",
+        ("Delta South", "2"): "P6",
+        ("Seville", "1"): "P10",
+        ("St Johns", "1"): "P12",
+        ("St Johns", "2"): "P13",
+        ("UCity", "1"): "P16",
+        ("UCity", "2"): "P17",
+        ("UCity", "3"): "P18",
+        ("UCity", "4"): "P19",
+        ("UCity", "5"): "P20",
+        ("Bentley's", "1"): "P22",  # After U-City
+        # Friday (value col T)
+        ("Colonial Bismark", "1"): "T4",
+        ("Bertrand", "1"): "T6",
+        ("Bertrand", "2"): "T8",
+        ("Oakdale SNF", "1"): "T12",
+        ("Oakdale SNF", "2"): "T14",
+        ("Oakdale ALF", "1"): "T18",
+        ("Oakdale ALF", "2"): "T19",
+        ("Oakdale ALF", "3"): "T20",
+        ("Oakdale RCF", "1"): "T23",
+        ("Oakdale RCF", "2"): "T24",
     }
     
-    # Column mappings: Mon=B-D, Tue=F-H, Wed=J-L, Thu=N-P, Fri=R-T
-    DAY_COLS = {
-        "Mon": ("B", "C", "D"),
-        "Tue": ("F", "G", "H"),
-        "Wed": ("J", "K", "L"),
-        "Thu": ("N", "O", "P"),
-        "Fri": ("R", "S", "T"),
+    # Daily total cells (for summing)
+    DAILY_TOTAL_CELLS = {
+        "Mon": "D39",
+        "Tue": "H18",
+        "Wed": "L32",
+        "Thu": "P23",
+        "Fri": "T27",
     }
-    WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-    DAY_NAMES = {"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday"}
+    
+    # Facility total cells (sum row after each facility)
+    FACILITY_TOTAL_MAP = {
+        # Monday
+        ("Mother of Good Counsel", "Mon"): "D8",
+        ("McClay", "Mon"): "D12",
+        ("Belleview", "Mon"): "D17",
+        ("Hillside", "Mon"): "D21",
+        ("Superior Manor", "Mon"): "D27",
+        ("Walnut Street", "Mon"): "D29",  # Single batch, no separate total
+        ("Colonial Doniphan", "Mon"): "D33",
+        ("New Hope", "Mon"): "D37",
+        # Tuesday
+        ("Westwood Hills", "Tue"): "H7",
+        ("Glenfield", "Tue"): "H10",
+        ("Granite House", "Tue"): "H12",  # Single batch
+        ("Creve Coeur", "Tue"): "H16",
+        # Wednesday
+        ("Licking RCF", "Wed"): "L4",  # Single batch
+        ("Salem Care Center", "Wed"): "L8",  # After 3 batches
+        ("Salem Residential Care", "Wed"): "L10",  # Single
+        ("Baisch SNF", "Wed"): "L13",  # After 2
+        ("Baisch RCF", "Wed"): "L14",  # Single
+        ("Pillars", "Wed"): "L21",  # After 2
+        ("Legacy", "Wed"): "L23",  # Single
+        ("John Knox CSL", "Wed"): "L25",  # Single
+        ("John Knox MM", "Wed"): "L26",  # Single
+        ("John Knox ALF", "Wed"): "L27",  # Single
+        ("John Knox ILF", "Wed"): "L30",  # After 2
+        # Thursday
+        ("Delta South", "Thu"): "P8",
+        ("Seville", "Thu"): "P10",
+        ("St Johns", "Thu"): "P14",
+        ("UCity", "Thu"): "P21",
+        ("Bentley's", "Thu"): "P22",
+        # Friday
+        ("Colonial Bismark", "Fri"): "T4",
+        ("Bertrand", "Fri"): "T10",
+        ("Oakdale SNF", "Fri"): "T16",
+        ("Oakdale ALF", "Fri"): "T21",
+        ("Oakdale RCF", "Fri"): "T25",
+    }
     
     # Get week info
     today = datetime.now()
@@ -664,148 +730,114 @@ def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset
     year = today.year
     filename = f"Cycle_Bag_Count_{year}_W{week_num:02d}.xlsx"
     filepath = APP_DIR / "data" / filename
+    template_path = APP_DIR / "data" / "template_bag_count.xlsx"
     
-    def xlsx_escape(value):
-        if value is None:
-            return ""
-        s = str(value)
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    
-    def build_sheet_data(value_key: str) -> tuple:
-        """Build sheet data for either 'census' or 'bags'."""
-        cells = {}  # {(row, col): value}
-        total = 0
+    # Build value updates for each sheet
+    def get_values(value_key: str) -> dict:
+        """Get cell->value mapping for census or bags."""
+        updates = {}
+        day_totals = {"Mon": 0, "Tue": 0, "Wed": 0, "Thu": 0, "Fri": 0}
         
-        # Row 2: Day headers
-        for day, (col_fac, col_batch, col_val) in DAY_COLS.items():
-            cells[(2, col_fac)] = DAY_NAMES[day]
+        day_map = {
+            "D": "Mon", "H": "Tue", "L": "Wed", "P": "Thu", "T": "Fri"
+        }
         
-        # Row 3: Column headers
-        header = "Census" if value_key == "census" else "Bags"
-        for day, (col_fac, col_batch, col_val) in DAY_COLS.items():
-            cells[(3, col_fac)] = "Facility"
-            cells[(3, col_batch)] = "Batch"
-            cells[(3, col_val)] = header
-        
-        # Track max row per day for totals
-        day_max_row = {day: 3 for day in WEEKDAYS}
-        day_totals = {day: 0 for day in WEEKDAYS}
-        
-        # Data rows starting at row 4
-        for day in WEEKDAYS:
-            col_fac, col_batch, col_val = DAY_COLS[day]
-            day_counts = counts.get(day, {})
-            row = 4
+        for (fac_key, batch_name), cell_ref in CELL_MAP.items():
+            day = day_map.get(cell_ref[0], "")
+            fac_counts = counts.get(day, {}).get(fac_key, {})
+            fac_batches = batches_config.get(fac_key, [])
             
-            for fac_key, fac_display, expected_batches in FACILITY_CONFIG.get(day, []):
-                fac_counts = day_counts.get(fac_key, {})
-                fac_batches = batches_config.get(fac_key, [])
-                
-                if not fac_batches:
-                    continue
-                
-                first_batch = True
-                for batch in fac_batches:
+            # Find batch by name
+            val = 0
+            for batch in fac_batches:
+                if batch["name"] == batch_name:
                     batch_id = batch["id"]
-                    batch_name = batch["name"]
                     values = fac_counts.get(batch_id, {})
                     val = values.get(value_key, 0) or 0
-                    
-                    if first_batch:
-                        cells[(row, col_fac)] = fac_display
-                        first_batch = False
-                    
-                    cells[(row, col_batch)] = batch_name
-                    if val > 0:
-                        cells[(row, col_val)] = val
-                        day_totals[day] += val
-                        total += val
-                    
-                    row += 1
-                
-                # Add facility subtotal row
-                day_max_row[day] = max(day_max_row[day], row)
-                row += 1  # Empty row after facility
+                    break
+            
+            if val > 0:
+                updates[cell_ref] = val
+                if day:
+                    day_totals[day] += val
         
-        # Add daily totals at bottom of each day
-        total_row = max(day_max_row.values()) + 2
-        for day, (col_fac, col_batch, col_val) in DAY_COLS.items():
-            cells[(total_row, col_fac)] = "Daily Total " + ("Census" if value_key == "census" else "Bags")
-            cells[(total_row, col_val)] = day_totals[day] if day_totals[day] > 0 else 0
+        # Add daily totals
+        for day, cell_ref in DAILY_TOTAL_CELLS.items():
+            if day_totals[day] > 0:
+                updates[cell_ref] = day_totals[day]
         
-        return cells, total
+        return updates, sum(day_totals.values())
     
-    def cells_to_sheet_xml(cells: dict) -> str:
-        """Convert cells dict to sheet XML."""
-        rows_data = {}
-        for (row, col), value in cells.items():
-            if row not in rows_data:
-                rows_data[row] = []
-            rows_data[row].append((col, value))
-        
-        sheet_rows = []
-        for row_num in sorted(rows_data.keys()):
-            cell_strs = []
-            for col, value in sorted(rows_data[row_num], key=lambda x: x[0]):
-                cell_ref = f"{col}{row_num}"
-                if isinstance(value, (int, float)):
-                    cell_strs.append(f'<c r="{cell_ref}"><v>{value}</v></c>')
-                else:
-                    cell_strs.append(f'<c r="{cell_ref}" t="inlineStr"><is><t>{xlsx_escape(value)}</t></is></c>')
-            sheet_rows.append(f'<row r="{row_num}">{"".join(cell_strs)}</row>')
-        
-        return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<sheetData>{"".join(sheet_rows)}</sheetData>
-</worksheet>'''
-    
-    # Build both sheets
-    census_cells, total_census = build_sheet_data("census")
-    bags_cells, total_bags = build_sheet_data("bags")
-    
-    census_xml = cells_to_sheet_xml(census_cells)
-    bags_xml = cells_to_sheet_xml(bags_cells)
+    census_updates, total_census = get_values("census")
+    bags_updates, total_bags = get_values("bags")
     
     result_msg = ""
-    
     (APP_DIR / "data").mkdir(parents=True, exist_ok=True)
     
-    # Build xlsx with two sheets
-    workbook_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheets>
-<sheet name="Cycle Census" sheetId="1" r:id="rId1"/>
-<sheet name="Cycle Bag Count" sheetId="2" r:id="rId2"/>
-</sheets>
-</workbook>'''
+    # Copy template and update values
+    shutil.copy(template_path, filepath)
     
-    rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
-</Relationships>'''
+    # Update the xlsx file in place
+    def update_sheet_values(zf_path, sheet_name, updates):
+        """Update cell values in a sheet while preserving formatting."""
+        from xml.etree import ElementTree as ET
+        
+        sheet_file = "xl/worksheets/sheet1.xml" if sheet_name == "census" else "xl/worksheets/sheet2.xml"
+        
+        # Read existing xlsx
+        with ZipFile(zf_path, 'r') as zf:
+            sheet_xml = zf.read(sheet_file).decode('utf-8')
+            all_files = {name: zf.read(name) for name in zf.namelist()}
+        
+        # Parse and update
+        ns = {'main': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        # Register namespace to avoid ns0 prefix
+        ET.register_namespace('', 'http://schemas.openxmlformats.org/spreadsheetml/2006/main')
+        ET.register_namespace('r', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships')
+        
+        root = ET.fromstring(sheet_xml)
+        sheet_data = root.find('.//main:sheetData', ns)
+        
+        for cell_ref, value in updates.items():
+            # Find or create the cell
+            col = ''.join(filter(str.isalpha, cell_ref))
+            row_num = ''.join(filter(str.isdigit, cell_ref))
+            
+            row_elem = sheet_data.find(f".//main:row[@r='{row_num}']", ns)
+            if row_elem is None:
+                continue
+            
+            cell_elem = row_elem.find(f".//main:c[@r='{cell_ref}']", ns)
+            if cell_elem is None:
+                # Create new cell element
+                cell_elem = ET.SubElement(row_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}c')
+                cell_elem.set('r', cell_ref)
+            
+            # Remove any existing value or type
+            cell_elem.attrib.pop('t', None)
+            for child in list(cell_elem):
+                if child.tag.endswith('}v') or child.tag.endswith('}is'):
+                    cell_elem.remove(child)
+            
+            # Add new value
+            v_elem = ET.SubElement(cell_elem, '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v')
+            v_elem.text = str(value)
+        
+        # Write back
+        updated_xml = ET.tostring(root, encoding='unicode')
+        # Add XML declaration
+        updated_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + updated_xml
+        
+        all_files[sheet_file] = updated_xml.encode('utf-8')
+        
+        # Rewrite zip
+        with ZipFile(zf_path, 'w', ZIP_DEFLATED) as zf:
+            for name, content in all_files.items():
+                zf.writestr(name, content)
     
-    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
-<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>'''
-    
-    root_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>'''
-    
-    with ZipFile(filepath, "w", ZIP_DEFLATED) as zf:
-        zf.writestr("[Content_Types].xml", content_types_xml)
-        zf.writestr("_rels/.rels", root_rels_xml)
-        zf.writestr("xl/workbook.xml", workbook_xml)
-        zf.writestr("xl/_rels/workbook.xml.rels", rels_xml)
-        zf.writestr("xl/worksheets/sheet1.xml", census_xml)
-        zf.writestr("xl/worksheets/sheet2.xml", bags_xml)
+    # Update both sheets
+    update_sheet_values(filepath, "census", census_updates)
+    update_sheet_values(filepath, "bags", bags_updates)
     
     # Email the report
     subject = f"Weekly Bag Count Report - Week {week_num}, {year}"
