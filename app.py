@@ -34,11 +34,21 @@ CYCLE_STAGE_ORDER = [
     "Exported",
     "Traying",
     "Running in machine",
-    "Through machine",
     "Through perl",
     "Bag check completed",
     "Toted",
-    "Facility finished",
+    "Facility finished",  # Auto-completes when all other steps are done
+]
+
+# Steps that require manual initials (excludes Facility finished which auto-completes)
+CYCLE_MANUAL_STAGES = [
+    "Pulling meds",
+    "Exported",
+    "Traying",
+    "Running in machine",
+    "Through perl",
+    "Bag check completed",
+    "Toted",
 ]
 
 # $$ Tracking stages (subset for cycle fill billing)
@@ -59,7 +69,8 @@ CYCLE_TEAM_SCHEDULE = {
     "Fri": ["Pleasant Hill", "Autumn Lake", "Grandview Care", "Heritage Pointe"],
 }
 
-CYCLE_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(CYCLE_STAGE_ORDER)}
+# Labels for manual stages only (Facility finished is auto)
+CYCLE_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(CYCLE_MANUAL_STAGES)}
 CYCLE_DOLLAR_STAGE_LABELS = {stage: f"{index + 1}. {stage}" for index, stage in enumerate(CYCLE_DOLLAR_STAGE_ORDER)}
 
 # Frequency options for facilities
@@ -658,6 +669,14 @@ def cycle_status_color(status: str) -> str:
 
 
 def render_cycle_facility(day: str, facility: str, stage_map: dict[str, str]) -> None:
+    # Check if all manual stages are complete - if so, auto-complete "Facility finished"
+    manual_complete = all(stage_map.get(s, "") for s in CYCLE_MANUAL_STAGES)
+    if manual_complete and not stage_map.get("Facility finished", ""):
+        stage_map["Facility finished"] = "AUTO"
+        st.session_state.cycle_team_tracking[day][facility]["Facility finished"] = "AUTO"
+        log_stage_to_excel(facility, "Facility finished", "AUTO")
+        save_session_to_shared()
+    
     completed, total = stage_counts(stage_map)
     progress_pct = completed / total
     status = cycle_status_label(stage_map)
@@ -671,7 +690,7 @@ def render_cycle_facility(day: str, facility: str, stage_map: dict[str, str]) ->
         initials_summary = ", ".join(
             f"{stage}: {initials}"
             for stage, initials in stage_map.items()
-            if initials
+            if initials and stage != "Facility finished"  # Don't show AUTO in summary
         )
         
         progress_col, summary_col = st.columns([1.25, 1])
@@ -679,7 +698,7 @@ def render_cycle_facility(day: str, facility: str, stage_map: dict[str, str]) ->
             st.progress(progress_pct, text=f"{pct_display}% complete")
         with summary_col:
             if status == "Completed":
-                st.success("Completed and ready to roll.")
+                st.success("✅ Facility finished!")
             elif status == "Not Started":
                 st.caption("No stages marked yet.")
             else:
@@ -687,8 +706,9 @@ def render_cycle_facility(day: str, facility: str, stage_map: dict[str, str]) ->
             if initials_summary:
                 st.caption(f"By: {initials_summary}")
 
+        # Only show manual stages (not "Facility finished")
         stage_cols = st.columns(3)
-        for idx, stage in enumerate(CYCLE_STAGE_ORDER):
+        for idx, stage in enumerate(CYCLE_MANUAL_STAGES):
             initials_key = f"cycle_initials::{day}::{facility}::{stage}"
             form_key = f"cycle_form::{day}::{facility}::{stage}"
             completed_initials = stage_map.get(stage, "")
