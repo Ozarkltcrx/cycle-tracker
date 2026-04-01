@@ -559,190 +559,298 @@ def save_delivery_routes(routes: dict) -> None:
     DELIVERY_ROUTES_FILE.write_text(json.dumps(routes, indent=2))
 
 
-def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com") -> str:
-    """Export current week's bag counts to Excel and email it, then reset for new week.
+def export_and_reset_bag_counts(email_to: str = "acheeley@ozarkltcrx.com", reset: bool = True) -> str:
+    """Export current week's bag counts to Excel (matching template format) and email it.
     
-    Called by Sunday 7pm cron job. Exports Mon-Fri data in a formatted spreadsheet
-    organized by day with facility/batch rows and bags/census columns.
+    Format matches Cycle Bag Count Template with:
+    - Two sheets: "Cycle Census" and "Cycle Bag Count"
+    - Days as columns: Mon(B-D), Tue(F-H), Wed(J-L), Thu(N-P), Fri(R-T)
+    - Each day has: Facility | Batch | Value
     
     Args:
         email_to: Email address to send the report to.
+        reset: If True, reset counts after export (for Sunday cron). If False, keep data.
     
     Returns: Status message.
     """
     import subprocess
     from datetime import datetime
+    from zipfile import ZIP_DEFLATED, ZipFile
+    import urllib.request
     
-    state = load_bag_count_state()
+    # Load directly from Supabase to avoid module-level init issues
+    _url = os.environ.get("SUPABASE_URL", "")
+    _key = os.environ.get("SUPABASE_KEY", "")
+    
+    if _url and _key:
+        try:
+            req = urllib.request.Request(
+                f"{_url}/rest/v1/tracking_state?key=eq.bag_counts",
+                headers={"apikey": _key, "Authorization": f"Bearer {_key}"}
+            )
+            with urllib.request.urlopen(req) as resp:
+                import json as _json
+                data = _json.loads(resp.read())
+                state = data[0]["value"] if data else {}
+        except Exception:
+            state = load_bag_count_state()
+    else:
+        state = load_bag_count_state()
+    
     counts = state.get("counts", {})
-    batches = state.get("batches", {})
+    batches_config = state.get("batches", {})
     
-    # Facility order by day (matches the dashboard display)
-    FACILITY_ORDER = {
-        "Mon": ["Mother of Good Counsel", "McClay", "Belleview", "Hillside", 
-                "Superior Manor", "Walnut Street", "Colonial Doniphan", "New Hope"],
-        "Tue": ["Westwood Hills", "Glenfield", "Granite House", "Creve Coeur"],
-        "Wed": ["Salem Care Center", "Salem Residential Care", "Baisch SNF", "Baisch RCF",
-                "Pillars", "John Knox ALF", "John Knox ILF", "John Knox MM", "John Knox CSL"],
-        "Thu": ["Delta South", "Seville", "St Johns", "UCity", "Bentley's"],
-        "Fri": ["Bertrand", "Colonial Bismark", "Oakdale SNF", "Oakdale ALF", "Oakdale RCF"],
+    # Facility order by day with display names (matching template)
+    FACILITY_CONFIG = {
+        "Mon": [
+            ("Mother of Good Counsel", "MOGC", ["1st Floor", "2nd Floor", "3rd Floor"]),
+            ("McClay", "McClay", ["100 Hall", "L Hall"]),
+            ("Belleview", "Belleview", ["Hall A", "Hall B", "Unit"]),
+            ("Hillside", "Hillside", ["Hill 1", "Hill 2"]),
+            ("Superior Manor", "Superior Manor", ["Hall 100", "Hall 200", "Hall 300", "Hall 400"]),
+            ("Walnut Street", "Walnut", [""]),
+            ("Colonial Doniphan", "Colonial Doniphan", ["Upstairs", "Down"]),
+            ("New Hope", "New Hope", ["ALF", "ILF"]),
+        ],
+        "Tue": [
+            ("Westwood Hills", "Westwood", ["A Wing", "B Wing", "C Wing"]),
+            ("Glenfield", "Glenfield", ["100"]),
+            ("Granite House", "Granite House", [""]),
+            ("Creve Coeur", "Creve Coeur", ["1", "2"]),
+        ],
+        "Wed": [
+            ("Licking RCF", "Licking RCF", ["1"]),
+            ("Salem Care Center", "Salem", ["1", "2", "3", "RCF"]),
+            ("Salem Residential Care", "Salem", ["RCF"]),
+            ("Baisch SNF", "Baisch SNF", ["1", "2"]),
+            ("Baisch RCF", "Baisch RCF", ["RCF"]),
+            ("Pillars", "Pillars", ["1", "2"]),
+            ("Legacy", "Legacy", [""]),
+            ("John Knox ALF", "John Knox", ["ALF"]),
+            ("John Knox ILF", "John Knox", ["ILF 1", "ILF 2"]),
+            ("John Knox MM", "John Knox", ["MM"]),
+            ("John Knox CSL", "John Knox", ["CSL"]),
+        ],
+        "Thu": [
+            ("Delta South", "Delta", ["1", "2"]),
+            ("Seville", "Seville", [""]),
+            ("St Johns", "St Johns", ["1", "2"]),
+            ("UCity", "U-City", ["1", "2", "3", "4", "5"]),
+            ("Bentley's", "Bentley's", ["1"]),
+        ],
+        "Fri": [
+            ("Colonial Bismark", "Colonial", ["1"]),
+            ("Bertrand", "Bertrand", ["1", "2"]),
+            ("Oakdale SNF", "Oakdale SNF", ["1", "2"]),
+            ("Oakdale ALF", "Oakdale ALF", ["1", "2", "3"]),
+            ("Oakdale RCF", "Oakdale RCF", ["1", "2"]),
+        ],
+    }
+    
+    # Column mappings: Mon=B-D, Tue=F-H, Wed=J-L, Thu=N-P, Fri=R-T
+    DAY_COLS = {
+        "Mon": ("B", "C", "D"),
+        "Tue": ("F", "G", "H"),
+        "Wed": ("J", "K", "L"),
+        "Thu": ("N", "O", "P"),
+        "Fri": ("R", "S", "T"),
     }
     WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    DAY_NAMES = {"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday"}
     
-    # Get week info for filename
+    # Get week info
     today = datetime.now()
     week_num = today.isocalendar()[1]
     year = today.year
-    filename = f"bag_counts_{year}_W{week_num:02d}.xlsx"
+    filename = f"Cycle_Bag_Count_{year}_W{week_num:02d}.xlsx"
     filepath = APP_DIR / "data" / filename
     
-    # Build Excel rows: Day | Facility | Batch | Bags | Census
-    excel_rows = [["Day", "Facility", "Batch", "Bags", "Census"]]  # Header
+    def xlsx_escape(value):
+        if value is None:
+            return ""
+        s = str(value)
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     
-    total_bags = 0
-    total_census = 0
-    
-    for day in WEEKDAYS:
-        day_counts = counts.get(day, {})
-        # Use ordered facility list, then any extras
-        ordered_facs = FACILITY_ORDER.get(day, [])
-        extra_facs = [f for f in day_counts.keys() if f not in ordered_facs]
-        all_facs = ordered_facs + extra_facs
+    def build_sheet_data(value_key: str) -> tuple:
+        """Build sheet data for either 'census' or 'bags'."""
+        cells = {}  # {(row, col): value}
+        total = 0
         
-        for facility in all_facs:
-            fac_counts = day_counts.get(facility, {})
-            fac_batches = batches.get(facility, [])
+        # Row 2: Day headers
+        for day, (col_fac, col_batch, col_val) in DAY_COLS.items():
+            cells[(2, col_fac)] = DAY_NAMES[day]
+        
+        # Row 3: Column headers
+        header = "Census" if value_key == "census" else "Bags"
+        for day, (col_fac, col_batch, col_val) in DAY_COLS.items():
+            cells[(3, col_fac)] = "Facility"
+            cells[(3, col_batch)] = "Batch"
+            cells[(3, col_val)] = header
+        
+        # Track max row per day for totals
+        day_max_row = {day: 3 for day in WEEKDAYS}
+        day_totals = {day: 0 for day in WEEKDAYS}
+        
+        # Data rows starting at row 4
+        for day in WEEKDAYS:
+            col_fac, col_batch, col_val = DAY_COLS[day]
+            day_counts = counts.get(day, {})
+            row = 4
             
-            if not fac_batches:
-                continue
+            for fac_key, fac_display, expected_batches in FACILITY_CONFIG.get(day, []):
+                fac_counts = day_counts.get(fac_key, {})
+                fac_batches = batches_config.get(fac_key, [])
                 
-            for batch in fac_batches:
-                batch_id = batch["id"]
-                batch_name = batch["name"]
-                values = fac_counts.get(batch_id, {})
-                bags = values.get("bags", 0) or 0
-                census = values.get("census", 0) or 0
+                if not fac_batches:
+                    continue
                 
-                excel_rows.append([day, facility, batch_name, bags, census])
-                total_bags += bags
-                total_census += census
+                first_batch = True
+                for batch in fac_batches:
+                    batch_id = batch["id"]
+                    batch_name = batch["name"]
+                    values = fac_counts.get(batch_id, {})
+                    val = values.get(value_key, 0) or 0
+                    
+                    if first_batch:
+                        cells[(row, col_fac)] = fac_display
+                        first_batch = False
+                    
+                    cells[(row, col_batch)] = batch_name
+                    if val > 0:
+                        cells[(row, col_val)] = val
+                        day_totals[day] += val
+                        total += val
+                    
+                    row += 1
+                
+                # Add facility subtotal row
+                day_max_row[day] = max(day_max_row[day], row)
+                row += 1  # Empty row after facility
+        
+        # Add daily totals at bottom of each day
+        total_row = max(day_max_row.values()) + 2
+        for day, (col_fac, col_batch, col_val) in DAY_COLS.items():
+            cells[(total_row, col_fac)] = "Daily Total " + ("Census" if value_key == "census" else "Bags")
+            cells[(total_row, col_val)] = day_totals[day] if day_totals[day] > 0 else 0
+        
+        return cells, total
     
-    result_msg = ""
-    
-    if len(excel_rows) > 1:  # More than just header
-        (APP_DIR / "data").mkdir(parents=True, exist_ok=True)
+    def cells_to_sheet_xml(cells: dict) -> str:
+        """Convert cells dict to sheet XML."""
+        rows_data = {}
+        for (row, col), value in cells.items():
+            if row not in rows_data:
+                rows_data[row] = []
+            rows_data[row].append((col, value))
         
-        # Write Excel file using the basic xlsx writer from app.py
-        # Build XML for xlsx
-        from zipfile import ZIP_DEFLATED, ZipFile
-        from xml.etree import ElementTree as ET
-        
-        def xlsx_escape(value):
-            if value is None:
-                return ""
-            s = str(value)
-            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        
-        def col_letter(idx):
-            result = ""
-            while idx >= 0:
-                result = chr(65 + (idx % 26)) + result
-                idx = idx // 26 - 1
-            return result
-        
-        # Build sheet XML
         sheet_rows = []
-        for row_idx, row in enumerate(excel_rows, start=1):
-            cells = []
-            for col_idx, value in enumerate(row):
-                cell_ref = f"{col_letter(col_idx)}{row_idx}"
+        for row_num in sorted(rows_data.keys()):
+            cell_strs = []
+            for col, value in sorted(rows_data[row_num], key=lambda x: x[0]):
+                cell_ref = f"{col}{row_num}"
                 if isinstance(value, (int, float)):
-                    cells.append(f'<c r="{cell_ref}"><v>{value}</v></c>')
+                    cell_strs.append(f'<c r="{cell_ref}"><v>{value}</v></c>')
                 else:
-                    cells.append(f'<c r="{cell_ref}" t="inlineStr"><is><t>{xlsx_escape(value)}</t></is></c>')
-            sheet_rows.append(f'<row r="{row_idx}">{"".join(cells)}</row>')
+                    cell_strs.append(f'<c r="{cell_ref}" t="inlineStr"><is><t>{xlsx_escape(value)}</t></is></c>')
+            sheet_rows.append(f'<row r="{row_num}">{"".join(cell_strs)}</row>')
         
-        sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
 <sheetData>{"".join(sheet_rows)}</sheetData>
 </worksheet>'''
-        
-        workbook_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    
+    # Build both sheets
+    census_cells, total_census = build_sheet_data("census")
+    bags_cells, total_bags = build_sheet_data("bags")
+    
+    census_xml = cells_to_sheet_xml(census_cells)
+    bags_xml = cells_to_sheet_xml(bags_cells)
+    
+    result_msg = ""
+    
+    (APP_DIR / "data").mkdir(parents=True, exist_ok=True)
+    
+    # Build xlsx with two sheets
+    workbook_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<sheets><sheet name="Bag Counts" sheetId="1" r:id="rId1"/></sheets>
+<sheets>
+<sheet name="Cycle Census" sheetId="1" r:id="rId1"/>
+<sheet name="Cycle Bag Count" sheetId="2" r:id="rId2"/>
+</sheets>
 </workbook>'''
-        
-        rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    
+    rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>
 </Relationships>'''
-        
-        content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    
+    content_types_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
 <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
 </Types>'''
-        
-        root_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    
+    root_rels_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>'''
-        
-        with ZipFile(filepath, "w", ZIP_DEFLATED) as zf:
-            zf.writestr("[Content_Types].xml", content_types_xml)
-            zf.writestr("_rels/.rels", root_rels_xml)
-            zf.writestr("xl/workbook.xml", workbook_xml)
-            zf.writestr("xl/_rels/workbook.xml.rels", rels_xml)
-            zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
-        
-        facilities_count = len(set(r[1] for r in excel_rows[1:]))  # Skip header
-        
-        # Email the report
-        subject = f"Weekly Bag Count Report - Week {week_num}, {year}"
-        body = f"""Weekly Bag Count Report
+    
+    with ZipFile(filepath, "w", ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types_xml)
+        zf.writestr("_rels/.rels", root_rels_xml)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", rels_xml)
+        zf.writestr("xl/worksheets/sheet1.xml", census_xml)
+        zf.writestr("xl/worksheets/sheet2.xml", bags_xml)
+    
+    # Email the report
+    subject = f"Weekly Bag Count Report - Week {week_num}, {year}"
+    body = f"""Weekly Bag Count Report
 
 Week {week_num}, {year}
 
 Summary:
 - Total Bags: {total_bags}
 - Total Census: {total_census}
-- Facilities: {facilities_count}
-- Data Rows: {len(excel_rows) - 1}
 
-The detailed Excel report is attached.
+The Excel report is attached with two sheets:
+- Cycle Census
+- Cycle Bag Count
 
 ---
 Automated report from Ozark LTC Rx Cycle Tracker
 """
-        
-        try:
-            cmd = [
-                "gog", "gmail", "send",
-                "--to", email_to,
-                "--subject", subject,
-                "--body", body,
-                "--attach", str(filepath)
-            ]
-            subprocess.run(cmd, check=True, capture_output=True, timeout=60)
-            result_msg = f"Exported {len(excel_rows)-1} rows to {filename} and emailed to {email_to}."
-        except subprocess.TimeoutExpired:
-            result_msg = f"Exported {len(excel_rows)-1} rows to {filename} but email timed out."
-        except subprocess.CalledProcessError as e:
-            result_msg = f"Exported {len(excel_rows)-1} rows to {filename} but email failed: {e}"
-        except Exception as e:
-            result_msg = f"Exported {len(excel_rows)-1} rows to {filename} but email failed: {e}"
-    else:
-        result_msg = "No bag count data to export."
     
-    # Reset state for new week - clear counts and completed_days, keep batches
-    new_state = {
-        "batches": batches,  # Keep batch definitions
-        "counts": {},        # Clear all counts
-        "unlocked_days": [], # Reset unlocks
-        "completed_days": [], # Reset completions
-    }
-    save_bag_count_state(new_state)
+    try:
+        cmd = [
+            "gog", "gmail", "send",
+            "--to", email_to,
+            "--subject", subject,
+            "--body", body,
+            "--attach", str(filepath)
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+        result_msg = f"Exported to {filename} and emailed to {email_to}."
+    except subprocess.TimeoutExpired:
+        result_msg = f"Exported to {filename} but email timed out."
+    except subprocess.CalledProcessError as e:
+        result_msg = f"Exported to {filename} but email failed: {e}"
+    except Exception as e:
+        result_msg = f"Exported to {filename} but email failed: {e}"
     
-    return result_msg + " Reset for new week."
+    # Reset state for new week if requested
+    if reset:
+        new_state = {
+            "batches": batches_config,
+            "counts": {},
+            "unlocked_days": [],
+            "completed_days": [],
+        }
+        save_bag_count_state(new_state)
+        result_msg += " Reset for new week."
+    
+    return result_msg
