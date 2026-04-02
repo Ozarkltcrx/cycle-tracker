@@ -1341,19 +1341,12 @@ if current_page == "Cycle Team":
         today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
         
         def get_visible_days_cycle(ts, fc):
+            # Show ALL days from Mon up to and including today
+            # Data stays visible until Sunday export
             if today_abbr not in DAY_ABBR_ORDER:
-                return DAY_ABBR_ORDER
-            visible = []
-            for i, d in enumerate(DAY_ABBR_ORDER):
-                if i == today_idx:
-                    visible.append(d)
-                elif i < today_idx:
-                    for f in fc.get(d, []):
-                        c, t = stage_counts(ts.get(d, {}).get(f, {}))
-                        if c < t:
-                            visible.append(d)
-                            break
-            return visible
+                return DAY_ABBR_ORDER  # Weekend: show all
+            # Include Mon through today
+            return DAY_ABBR_ORDER[:today_idx + 1]
         
         visible_days = get_visible_days_cycle(st.session_state.cycle_team_tracking, cycle_facilities)
         if not visible_days:
@@ -1465,22 +1458,12 @@ if current_page == "Cycle Team":
         st.caption("Click a facility $$ to expand and mark stages complete.")
         
         def get_visible_days_dollar(ts, fc):
+            # Show ALL days from Mon up to and including today
+            # Data stays visible until Sunday export
             if today_abbr not in DAY_ABBR_ORDER:
-                return DAY_ABBR_ORDER
-            visible = []
-            for i, d in enumerate(DAY_ABBR_ORDER):
-                if i == today_idx:
-                    visible.append(d)
-                elif i < today_idx:
-                    for f in fc.get(d, []):
-                        fs = ts.get(d, {}).get(f, {})
-                        if fs.get("_no_meds"):
-                            continue
-                        c, t = stage_counts(fs, CYCLE_DOLLAR_STAGE_ORDER)
-                        if c < t:
-                            visible.append(d)
-                            break
-            return visible
+                return DAY_ABBR_ORDER  # Weekend: show all
+            # Include Mon through today
+            return DAY_ABBR_ORDER[:today_idx + 1]
         
         visible_days = get_visible_days_dollar(st.session_state.dollar_tracking, dollar_facilities)
         if not visible_days:
