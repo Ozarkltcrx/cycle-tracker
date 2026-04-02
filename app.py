@@ -55,7 +55,6 @@ CYCLE_MANUAL_STAGES = [
 CYCLE_DOLLAR_STAGE_ORDER = [
     "Exported",
     "Through Perl",
-    "Back Checked",
     "Toted",
     "Facility Complete",  # Auto-completes when all other steps are done
 ]
@@ -64,7 +63,6 @@ CYCLE_DOLLAR_STAGE_ORDER = [
 DOLLAR_MANUAL_STAGES = [
     "Exported",
     "Through Perl",
-    "Back Checked",
     "Toted",
 ]
 
