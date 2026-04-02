@@ -163,8 +163,6 @@ def load_shared_state() -> dict:
     
     The export_week_key tracks which week's export has been completed.
     Data for week W stays until Sunday of week W is processed.
-    
-    Historical data is archived before rollover for viewing previous weeks.
     """
     state = supa.load_tracking_state()
     current_week = get_current_week_key()
@@ -182,12 +180,7 @@ def load_shared_state() -> dict:
     stored_week = state.get("week_key", "")
     
     if stored_week and stored_week != current_week:
-        # Week changed - ARCHIVE the old week's data before rolling over
-        old_cycle = state.get("cycle_team_tracking", {})
-        old_dollar = state.get("dollar_tracking", {})
-        if old_cycle or old_dollar:
-            supa.archive_week_data(stored_week, old_cycle, old_dollar)
-        
+        # Week changed - check if we should roll data
         # Move next_week_data to current_week_data
         if state.get("next_week_data"):
             # Preserve next week's pre-entered data as current week
@@ -1343,50 +1336,6 @@ if current_page == "Cycle Team":
                     st.session_state.cycle_team_tracking[day][fac] = {stage: "" for stage in CYCLE_STAGE_ORDER}
         
         st.markdown("### Cycle Team Tracking")
-        
-        # ── History Viewer ──
-        with st.expander("📜 View Previous Weeks", expanded=False):
-            history_weeks = supa.get_available_history_weeks()
-            if history_weeks:
-                selected_history_week = st.selectbox(
-                    "Select Week",
-                    options=history_weeks,
-                    format_func=lambda w: f"Week {w} ({w.split('-W')[0]})",
-                    key="cycle_history_week"
-                )
-                
-                if selected_history_week:
-                    history_data = supa.get_week_history(selected_history_week)
-                    if history_data:
-                        hist_cycle = history_data.get("cycle_team_tracking", {})
-                        archived_at = history_data.get("archived_at", "Unknown")
-                        st.caption(f"Archived: {archived_at[:10] if archived_at != 'Unknown' else 'Unknown'}")
-                        
-                        # Build summary table
-                        hist_rows = []
-                        for day in DAY_ABBR_ORDER:
-                            day_data = hist_cycle.get(day, {})
-                            for fac, stages in day_data.items():
-                                c, t = stage_counts(stages)
-                                status = "Completed" if c >= t else f"{c}/{t}"
-                                # Get initials
-                                initials_list = [v for v in stages.values() if v and v != "AUTO"]
-                                initials_str = ", ".join(set(initials_list)) if initials_list else "—"
-                                hist_rows.append({
-                                    "Day": day,
-                                    "Facility": fac,
-                                    "Status": status,
-                                    "Initials": initials_str,
-                                })
-                        
-                        if hist_rows:
-                            st.dataframe(pd.DataFrame(hist_rows), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("No data recorded for this week.")
-                    else:
-                        st.warning("Could not load history data.")
-            else:
-                st.info("No historical data available yet. Data is archived when the week rolls over.")
         today_abbr = _today_abbr()
         week_dates = get_week_dates()
         today_idx = DAY_ABBR_ORDER.index(today_abbr) if today_abbr in DAY_ABBR_ORDER else -1
@@ -1472,53 +1421,6 @@ if current_page == "Cycle Team":
         week_num = get_current_week_number()
         
         st.caption(f"High-dollar billing summary as of {datetime.now().strftime('%A %Y-%m-%d %H:%M')} (Week {week_num})")
-        
-        # ── History Viewer ──
-        with st.expander("📜 View Previous Weeks", expanded=False):
-            dollar_history_weeks = supa.get_available_history_weeks()
-            if dollar_history_weeks:
-                selected_dollar_history_week = st.selectbox(
-                    "Select Week",
-                    options=dollar_history_weeks,
-                    format_func=lambda w: f"Week {w} ({w.split('-W')[0]})",
-                    key="dollar_history_week"
-                )
-                
-                if selected_dollar_history_week:
-                    dollar_history_data = supa.get_week_history(selected_dollar_history_week)
-                    if dollar_history_data:
-                        hist_dollar = dollar_history_data.get("dollar_tracking", {})
-                        archived_at = dollar_history_data.get("archived_at", "Unknown")
-                        st.caption(f"Archived: {archived_at[:10] if archived_at != 'Unknown' else 'Unknown'}")
-                        
-                        # Build summary table
-                        hist_dollar_rows = []
-                        for day in DAY_ABBR_ORDER:
-                            day_data = hist_dollar.get(day, {})
-                            for fac, stages in day_data.items():
-                                if stages.get("_no_meds"):
-                                    status = "No Meds"
-                                    initials_str = "BYPASS"
-                                else:
-                                    c, t = stage_counts(stages, CYCLE_DOLLAR_STAGE_ORDER)
-                                    status = "Completed" if c >= t else f"{c}/{t}"
-                                    initials_list = [v for k, v in stages.items() if v and v != "AUTO" and not k.startswith("_")]
-                                    initials_str = ", ".join(set(initials_list)) if initials_list else "—"
-                                hist_dollar_rows.append({
-                                    "Day": day,
-                                    "Facility": fac,
-                                    "Status": status,
-                                    "Initials": initials_str,
-                                })
-                        
-                        if hist_dollar_rows:
-                            st.dataframe(pd.DataFrame(hist_dollar_rows), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("No data recorded for this week.")
-                    else:
-                        st.warning("Could not load history data.")
-            else:
-                st.info("No historical data available yet. Data is archived when the week rolls over.")
         
         # Dashboard summary - matching Cycle Team Dashboard style
         if today_abbr in dollar_facilities and dollar_facilities[today_abbr]:
