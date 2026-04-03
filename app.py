@@ -1355,7 +1355,11 @@ if current_page == "Cycle Team":
                 visible_days.append(unlocked)
         visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
         
-        future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
+        # On Friday or weekend, wrap around to allow unlocking Monday (next week)
+        if today_idx == 4 or today_idx < 0:  # Friday or weekend
+            future_days = ["Mon"]  # Next week's Monday
+        else:
+            future_days = DAY_ABBR_ORDER[today_idx + 1:]
         next_unlockable = next((fd for fd in future_days if fd not in st.session_state.unlocked_days), None)
         
         st.caption("Click a facility to expand and mark stages complete.")
@@ -1472,7 +1476,11 @@ if current_page == "Cycle Team":
                 visible_days.append(unlocked)
         visible_days = sorted(set(visible_days), key=lambda d: DAY_ABBR_ORDER.index(d) if d in DAY_ABBR_ORDER else 99)
         
-        future_days = DAY_ABBR_ORDER[today_idx + 1:] if today_idx >= 0 else []
+        # On Friday or weekend, wrap around to allow unlocking Monday (next week)
+        if today_idx == 4 or today_idx < 0:  # Friday or weekend
+            future_days = ["Mon"]  # Next week's Monday
+        else:
+            future_days = DAY_ABBR_ORDER[today_idx + 1:]
         next_unlockable = next((fd for fd in future_days if fd not in st.session_state.dollar_unlocked_days), None)
         
         btn_cols = st.columns(5)
